@@ -43,7 +43,7 @@ flowchart TB
 f/<folderId>/<photoId>/thumb.webp    ~400px   — grid
 f/<folderId>/<photoId>/medium.webp   ~1200px  — lightbox
 f/<folderId>/<photoId>/large.webp    ~2400px  — zoom
-f/<folderId>/<photoId>/original.jpg  as uploaded — download only
+orig/<folderId>/<photoId>.jpg        as uploaded — download only
 raw/<folderId>/<photoId>.RAF         as uploaded — lifecycle → Glacier IR at 30d
 ```
 
@@ -51,9 +51,15 @@ Putting `folderId` in the key path is what makes sharing enforceable: a signed
 cookie with resource `https://photos.alex-knowlton.com/f/<folderId>/*` grants
 exactly one folder and nothing else.
 
-RAWs live under a **separate top-level prefix**, so no folder share cookie can ever
-reach them. A RAW download is a one-off CloudFront signed URL, issued per object
-only when the folder or share has `allowRaw`.
+Three separate prefixes, for two reasons:
+
+1. **Share cookies cannot reach originals or RAWs.** A cookie scoped to `f/<id>/*`
+   structurally excludes `orig/` and `raw/`, regardless of how the API behaves.
+   Downloading either is a one-off signed URL, issued per object, only when the
+   share has `allowDownload` / `allowRaw`.
+2. **No notification loop.** The derive Lambda listens on `orig/` and `raw/` and
+   writes to `f/`. If derivatives shared a prefix with their inputs, every write
+   would retrigger the function.
 
 ## CloudFront behaviors
 
@@ -61,6 +67,7 @@ only when the folder or share has `allowRaw`.
 |---|---|---|
 | `api/*` | API Gateway | no cache, forwards Authorization |
 | `f/*` | S3 (OAC) | **trusted key group** — signed cookies |
+| `orig/*` | S3 (OAC) | **trusted key group** — signed URLs only |
 | `raw/*` | S3 (OAC) | **trusted key group** — signed URLs only |
 | `*` | S3 (OAC) | public — the static site |
 

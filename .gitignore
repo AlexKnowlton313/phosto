@@ -20,3 +20,6 @@ functions/layers/*/nodejs/
 
 .DS_Store
 ._*
+
+# Local deployment config (contains account id)
+infra/config.json
