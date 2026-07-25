@@ -1,0 +1,22 @@
+node_modules/
+dist/
+build/
+cdk.out/
+*.tsbuildinfo
+
+# Local env / generated config
+.env
+.env.local
+infra/.env
+web/.env.local
+web/public/config.json
+scripts/.upload-state.json
+
+# CloudFront signing keys — public PEM is committed-safe but keep both out by default
+infra/keys/
+
+# Lambda layer build output
+functions/layers/*/nodejs/
+
+.DS_Store
+._*

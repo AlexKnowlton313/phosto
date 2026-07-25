@@ -1,0 +1,25 @@
+{
+  "name": "phosto",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted photo gallery on AWS — folders, share links, and RAW files kept out of sight until you want them.",
+  "license": "MIT",
+  "workspaces": [
+    "infra",
+    "functions",
+    "web",
+    "scripts"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "bootstrap:keys": "node scripts/bootstrap-keys.mjs",
+    "build:layer": "bash functions/build-layer.sh",
+    "build:web": "npm run build --workspace web",
+    "deploy": "npm run build:layer && npm run build --workspace web && npm run deploy --workspace infra",
+    "diff": "npm run diff --workspace infra",
+    "upload": "node scripts/bulk-upload.mjs",
+    "typecheck": "tsc -b infra functions web"
+  }
+}

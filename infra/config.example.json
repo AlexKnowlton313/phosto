@@ -1,0 +1,10 @@
+{
+  "account": "000000000000",
+  "region": "us-east-1",
+  "domainName": "photos.example.com",
+  "hostedZoneName": "example.com",
+  "bucketName": "example-phosto",
+  "adminEmail": "you@example.com",
+  "signingKeyParameterName": "/phosto/cloudfront/private-key",
+  "signingPublicKeyPath": "keys/cloudfront-public.pem"
+}
