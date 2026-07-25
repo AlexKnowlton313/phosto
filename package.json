@@ -20,6 +20,7 @@
     "deploy": "npm run build:layer && npm run build --workspace web && npm run deploy --workspace infra",
     "diff": "npm run diff --workspace infra",
     "upload": "node scripts/bulk-upload.mjs",
-    "typecheck": "tsc -b infra functions web"
+    "preview:fixture": "node scripts/make-preview.mjs",
+    "typecheck": "tsc -p infra --noEmit && tsc -p functions --noEmit && tsc -p web --noEmit"
   }
 }

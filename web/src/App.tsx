@@ -1,0 +1,63 @@
+import { useEffect, useState } from 'react';
+import { loadConfig, type AppConfig } from './api';
+import { currentToken } from './auth';
+import { Admin } from './views/Admin';
+import { Share } from './views/Share';
+import { SignIn } from './views/SignIn';
+
+/** Share links are the only client-side route: /s/<token>. */
+const shareToken = () => {
+  const match = /^\/s\/([\w-]+)\/?$/.exec(window.location.pathname);
+  return match?.[1];
+};
+
+export function App() {
+  const [config, setConfig] = useState<AppConfig>();
+  const [token, setToken] = useState<string | null>();
+  const [failed, setFailed] = useState(false);
+
+  const token$ = shareToken();
+
+  useEffect(() => {
+    loadConfig()
+      .then(async (loaded) => {
+        setConfig(loaded);
+        // A share viewer never needs Cognito, so don't make them wait on it.
+        setToken(token$ ? null : await currentToken(loaded));
+      })
+      .catch(() => setFailed(true));
+  }, [token$]);
+
+  if (token$) return <Share token={token$} />;
+
+  if (failed) {
+    return (
+      <div className="shell">
+        <h1>Not configured</h1>
+        <p className="note">
+          The app could not read its configuration. If this is a fresh deployment,
+          the stack may still be finishing.
+        </p>
+      </div>
+    );
+  }
+
+  if (!config || token === undefined) {
+    return (
+      <div className="empty">
+        <p className="note">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!token) {
+    return (
+      <SignIn
+        config={config}
+        onSignedIn={() => currentToken(config).then(setToken)}
+      />
+    );
+  }
+
+  return <Admin config={config} token={token} />;
+}

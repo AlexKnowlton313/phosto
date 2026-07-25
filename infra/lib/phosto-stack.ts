@@ -1,5 +1,4 @@
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
@@ -16,8 +15,7 @@ import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import type { Construct } from 'constructs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, '..', '..');
+const repoRoot = resolve(__dirname, '..', '..');
 
 export interface PhostoConfig {
   account: string;
@@ -160,7 +158,7 @@ export class PhostoStack extends cdk.Stack {
 
     const sharpLayer = new lambda.LayerVersion(this, 'ImageLayer', {
       code: lambda.Code.fromAsset(join(repoRoot, 'functions/layers/sharp')),
-      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
+      compatibleRuntimes: [lambda.Runtime.NODEJS_24_X],
       compatibleArchitectures: [lambda.Architecture.ARM_64],
       description: 'sharp + libheif-js built for linux-arm64',
     });
@@ -178,13 +176,13 @@ export class PhostoStack extends cdk.Stack {
     const bundling = {
       minify: true,
       sourceMap: true,
-      target: 'node20',
+      target: 'node24',
       format: cdk.aws_lambda_nodejs.OutputFormat.ESM,
     };
 
     const apiFn = new NodejsFunction(this, 'ApiFunction', {
       entry: join(repoRoot, 'functions/api/index.ts'),
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 512,
       timeout: cdk.Duration.seconds(15),
@@ -200,7 +198,7 @@ export class PhostoStack extends cdk.Stack {
 
     const deriveFn = new NodejsFunction(this, 'DeriveFunction', {
       entry: join(repoRoot, 'functions/derive/index.ts'),
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       // Decoding a 26MP frame and writing three sizes wants headroom; more memory
       // also means more CPU, so this is usually cheaper per-photo, not dearer.
@@ -300,7 +298,7 @@ export class PhostoStack extends cdk.Stack {
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         responseHeadersPolicy:
-          cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS_WITH_PREFLIGHT,
+          cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
         compress: true,
       },
       additionalBehaviors: {
@@ -336,7 +334,17 @@ export class PhostoStack extends cdk.Stack {
     // ------------------------------------------------------------ web deployment
 
     new s3deploy.BucketDeployment(this, 'WebDeployment', {
-      sources: [s3deploy.Source.asset(join(repoRoot, 'web/dist'))],
+      sources: [
+        s3deploy.Source.asset(join(repoRoot, 'web/dist')),
+        // Resolves the pool/client tokens at deploy time, so the JS bundle stays
+        // free of account-specific values and needs no rebuild to redeploy.
+        s3deploy.Source.jsonData('config.json', {
+          region: this.region,
+          userPoolId: userPool.userPoolId,
+          userPoolClientId: userPoolClient.userPoolClientId,
+          domain: config.domainName,
+        }),
+      ],
       destinationBucket: bucket,
       distribution,
       distributionPaths: ['/index.html', '/config.json'],

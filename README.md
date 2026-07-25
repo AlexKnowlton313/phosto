@@ -45,6 +45,12 @@ Copy the example config and fill in your own domain and account:
 cp infra/config.example.json infra/config.json
 ```
 
+Bootstrap CDK in the target account and region, once per account:
+
+```bash
+npx cdk bootstrap aws://<ACCOUNT_ID>/us-east-1
+```
+
 Generate the CloudFront signing key pair. The private key goes to SSM Parameter
 Store as a `SecureString`; the public key is needed at synth time.
 
@@ -81,6 +87,18 @@ npm run upload -- --folder "Summer 2026" --src /Volumes/Untitled/DCIM/100_FUJI
 npm run diff        # cdk diff
 npm run typecheck
 npm run build:web
+```
+
+To work on the gallery without a deployed stack, build a fixture from a folder of
+real photos and run the dev server. Vite serves the fixture for any `/api/share/*`
+request, so `/s/anything` renders a working contact sheet.
+
+```bash
+npm run preview:fixture -- --src /Volumes/Untitled/DCIM/100_FUJI --name "Cascade Loop"
+```
+
+```bash
+npm run dev --workspace web
 ```
 
 ## License

@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import * as cdk from 'aws-cdk-lib';
-import { PhostoStack, type PhostoConfig } from '../lib/phosto-stack.js';
+import { PhostoStack, type PhostoConfig } from '../lib/phosto-stack';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const configPath = resolve(here, '..', 'config.json');
+const configPath = resolve(__dirname, '..', 'config.json');
 
 if (!existsSync(configPath)) {
   throw new Error(
@@ -16,7 +14,7 @@ if (!existsSync(configPath)) {
 
 const config = JSON.parse(readFileSync(configPath, 'utf8')) as PhostoConfig;
 
-const publicKeyPath = resolve(here, '..', config.signingPublicKeyPath);
+const publicKeyPath = resolve(__dirname, '..', config.signingPublicKeyPath);
 if (!existsSync(publicKeyPath)) {
   throw new Error(
     `CloudFront public key not found at ${publicKeyPath}. Run \`npm run bootstrap:keys\` first.`,

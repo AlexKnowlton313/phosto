@@ -23,3 +23,9 @@ functions/layers/*/nodejs/
 
 # Local deployment config (contains account id)
 infra/config.json
+
+# Local preview fixtures (generated from a real card)
+web/public/__preview/
+
+# CDK lookup cache (embeds the account id; keep out of a public repo)
+infra/cdk.context.json
