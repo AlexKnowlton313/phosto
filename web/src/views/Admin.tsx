@@ -7,6 +7,7 @@ import {
   type AppConfig,
   type FolderView,
   type PhotoView,
+  type ShareSummary,
 } from '../api';
 import { signOut } from '../auth';
 import {
@@ -22,6 +23,35 @@ const UPLOAD_CONCURRENCY = 4;
 
 /** Mirrors the server's cap in `movePhotos`, which is bounded by a 15s timeout. */
 const MOVE_BATCH = 10;
+
+const relative = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+
+/**
+ * `expiresAt` is unix seconds. One source of truth for both the word and the
+ * greying: computing them separately let a link with 20 minutes left round down
+ * to "expired" while still rendering live and still working.
+ */
+function expiry(expiresAt: number) {
+  const ms = expiresAt * 1000 - Date.now();
+  if (ms <= 0) return { expired: true, label: 'expired' };
+
+  // Ceil, not round: anything still live has to read as live, even at a minute.
+  const hours = Math.ceil(ms / 3600_000);
+  return {
+    expired: false,
+    label:
+      hours < 48
+        ? relative.format(hours, 'hour')
+        : relative.format(Math.round(hours / 24), 'day'),
+  };
+}
+
+const dayMonthYear = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
 
 interface UploadState {
   total: number;
@@ -41,7 +71,15 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const [photos, setPhotos] = useState<PhotoView[]>();
   const [openIndex, setOpenIndex] = useState<number>();
   const [upload, setUpload] = useState<UploadState>();
-  const [shareUrl, setShareUrl] = useState<string>();
+  // The created link, kept only until the folder changes: the API returns it once
+  // and stores nothing but its hash, so leaving this view loses it for good.
+  const [created, setCreated] = useState<{ url: string; expiresInDays: number }>();
+  const [shares, setShares] = useState<ShareSummary[]>();
+  const [shareForm, setShareForm] = useState<{
+    label: string;
+    days: number;
+    allowDownload: boolean;
+  }>();
   const [error, setError] = useState<string>();
   // A chunked move runs for a minute on a full roll. Without a running count it
   // is indistinguishable from a hang, and the user's next move is a reload.
@@ -88,14 +126,25 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderId, token]);
 
+  const loadShares = useCallback(async () => {
+    if (!folderId) return;
+    setShares((await api.listShares(folderId)).shares);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderId, token]);
+
   useEffect(() => {
     setPhotos(undefined);
-    setShareUrl(undefined);
+    setCreated(undefined);
+    setShares(undefined);
+    setShareForm(undefined);
     setOpenIndex(undefined);
     setShowHidden(false);
     clear();
     refresh().catch((err: Error) => setError(err.message));
-  }, [refresh, clear]);
+    // Separate from `refresh` on purpose — that one is re-run every 4s while
+    // derivatives are pending, and the share list has nothing to do with them.
+    loadShares().catch((err: Error) => setError(err.message));
+  }, [refresh, loadShares, clear]);
 
   // Derivatives land a few seconds after upload, so poll while any are pending.
   useEffect(() => {
@@ -167,12 +216,42 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   };
 
   const share = async () => {
+    if (!current || !shareForm) return;
+    setError(undefined);
+    try {
+      setCreated(
+        await api.createShare(current.folderId, {
+          expiresInDays: shareForm.days,
+          allowDownload: shareForm.allowDownload,
+          label: shareForm.label.trim() || undefined,
+        }),
+      );
+      setShareForm(undefined);
+      await loadShares();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const revokeShare = async (link: ShareSummary) => {
     if (!current) return;
-    const { url } = await api.createShare(current.folderId, {
-      expiresInDays: 30,
-      allowDownload: true,
-    });
-    setShareUrl(url);
+    if (
+      !window.confirm(
+        `Revoke ${link.label ? `“${link.label}”` : 'this link'}? It stops working ` +
+          'immediately, but a viewer with the roll already open keeps their signed ' +
+          'cookie until it expires.',
+      )
+    ) {
+      return;
+    }
+    setError(undefined);
+    try {
+      await api.revokeShare(current.folderId, link.id);
+      setCreated(undefined);
+      await loadShares();
+    } catch (err) {
+      setError((err as Error).message);
+    }
   };
 
   const download = async (photo: PhotoView, kind: 'original' | 'raw') => {
@@ -544,8 +623,20 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           </button>
         )}
 
-        <button className="btn" disabled={batching} onClick={share}>
-          Share roll
+        <button
+          className="btn"
+          disabled={batching}
+          onClick={() => {
+            // Drop the previous link when opening the form again: it is shown
+            // once and only its hash is stored, so leaving it under a form for
+            // the next one reads as if it were still on offer.
+            setCreated(undefined);
+            setShareForm((open) =>
+              open ? undefined : { label: '', days: 30, allowDownload: true },
+            );
+          }}
+        >
+          {shareForm ? 'Cancel' : 'Share roll'}
         </button>
 
         {photos && current.folderId !== ORPHAN_FOLDER_ID && (
@@ -566,20 +657,121 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         </>
       )}
 
-      {shareUrl && (
+      {/* Three fields is one dialog too many for the window.prompt convention the
+          rest of this view uses, so the create flow is inline instead. */}
+      {shareForm && (
         <div style={{ padding: '16px 24px' }} className="stack">
-          <label htmlFor="share-url">Share link — expires in 30 days</label>
+          <div className="share-form">
+            <div className="field">
+              <label htmlFor="share-label">Label</label>
+              <input
+                id="share-label"
+                type="text"
+                placeholder="for mum"
+                value={shareForm.label}
+                onChange={(e) => setShareForm({ ...shareForm, label: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="share-days">Expires in (days)</label>
+              <input
+                id="share-days"
+                type="number"
+                min={1}
+                max={365}
+                value={shareForm.days}
+                onChange={(e) =>
+                  setShareForm({ ...shareForm, days: Number(e.target.value) })
+                }
+              />
+            </div>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={shareForm.allowDownload}
+                onChange={(e) =>
+                  setShareForm({ ...shareForm, allowDownload: e.target.checked })
+                }
+              />
+              Allow downloads
+            </label>
+            {/* There is no <form>, so min/max above only drive the spinner —
+                nothing validates on click. Guarding here instead of leaning on
+                the server's clamp, which turns a cleared field into a 1-day
+                link and a non-numeric one into 30, both without a word. */}
+            <button
+              className="btn"
+              disabled={!Number.isInteger(shareForm.days) || shareForm.days < 1}
+              onClick={share}
+            >
+              Create link
+            </button>
+          </div>
+        </div>
+      )}
+
+      {created && (
+        <div style={{ padding: '16px 24px' }} className="stack">
+          <label htmlFor="share-url">
+            Share link — expires in {created.expiresInDays}
+            {created.expiresInDays === 1 ? ' day' : ' days'}
+          </label>
           <div className="share-link" id="share-url">
-            {shareUrl}
+            {created.url}
           </div>
           <div>
             <button
               className="btn"
-              onClick={() => navigator.clipboard.writeText(shareUrl)}
+              onClick={() => navigator.clipboard.writeText(created.url)}
             >
               Copy link
             </button>
           </div>
+          <p className="note">Copy it now — only its hash is stored, so this is the
+            one time it can be shown.</p>
+        </div>
+      )}
+
+      {shares && shares.length > 0 && (
+        <div style={{ padding: '16px 24px' }} className="stack">
+          <div className="shares-scroll">
+            <table className="shares">
+            <thead>
+              <tr>
+                <th>Label</th>
+                <th>Created</th>
+                <th>Expires</th>
+                <th>Download</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {shares.map((link) => {
+                // Expired links stay listed rather than filtered out: DynamoDB TTL
+                // deletion lags up to 48h, and a row that quietly vanishes hours
+                // later looks like a bug. Greyed, so the lag is visible instead.
+                const { expired, label } = expiry(link.expiresAt);
+                return (
+                  <tr key={link.id} className={expired ? 'expired' : undefined}>
+                    <td>{link.label ?? '—'}</td>
+                    <td>{dayMonthYear(link.createdAt)}</td>
+                    <td>{label}</td>
+                    <td>{link.allowDownload ? 'yes' : 'no'}</td>
+                    <td>
+                      <button className="btn btn-danger" onClick={() => revokeShare(link)}>
+                        Revoke
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            </table>
+          </div>
+          <p className="note">
+            A share URL is shown once, when it is created. Only its SHA-256 is
+            stored, so no link can be listed here — revoke one and make another.
+          </p>
         </div>
       )}
 

@@ -1,17 +1,25 @@
 # Planned work
 
-Each file here outlines one unbuilt feature: what already exists, what is missing,
-the hazards specific to this codebase, and the smallest implementation that works.
+**Nothing is planned. Every doc that was here has shipped, and this README is all
+that remains of the directory.**
 
-None of these are committed to. They exist so the API surface and data model that
-already anticipate them are not mistaken for dead code and deleted — the
+Each file here outlined one unbuilt feature: what already existed, what was
+missing, the hazards specific to this codebase, and the smallest implementation
+that worked. They existed so the API surface and data model that already
+anticipated them were not mistaken for dead code and deleted — the
 over-engineering audit on 2026-07-25 flagged every one of them as removable, which
-is correct if they are never built and wrong if they are.
+was correct if they were never built and wrong if they were. They were all built.
 
-| Doc | Server today | Client today |
-|---|---|---|
+What follows is what those docs got right and the code does not say on its own.
+Add a new file here to plan the next feature, or delete this README with the
+directory once nothing below is worth keeping.
 
-| [share-management.md](share-management.md) | complete | none |
+Share management — list, revoke and label links — shipped on 2026-07-26 and its
+doc is gone. The list can never redisplay a share URL: `createShare` returns it
+once and persists only its SHA-256, which is the point of storing the hash, so
+the admin view says so in place of a URL column. Expired shares stay in the list
+greyed rather than filtered out, because DynamoDB TTL deletion lags up to 48
+hours and a row that disappears hours later reads as a bug.
 
 Cover photos shipped on 2026-07-26 and its doc is gone. Multi-select download
 shipped on 2026-07-26 — phase 1 (sequential downloads) only, and its doc is gone
@@ -37,4 +45,5 @@ may destroy an image as a side effect of tidying folders. See `ORPHAN_FOLDER_ID`
 in `functions/shared/types.ts`.
 
 Read [../architecture.md](../architecture.md) first if you have not — the three-way
-prefix split it describes constrains most of them.
+prefix split it describes constrained most of them, and will constrain whatever
+comes next.

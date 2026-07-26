@@ -490,8 +490,10 @@ input:focus {
   color: var(--ink);
 }
 
+/* --ink, not --amber: this was dead CSS until the share form's "Allow
+   downloads" box used it, and amber means negatives and nothing else. */
 .check input {
-  accent-color: var(--amber);
+  accent-color: var(--ink);
   width: 16px;
   height: 16px;
 }
@@ -634,6 +636,55 @@ input:focus {
   height: 100%;
   background: var(--amber);
   transition: width 200ms ease;
+}
+
+/* One row on a desktop, wrapping to a column on a phone — the fields are short
+   and a stacked form for three of them reads like a much bigger commitment. */
+.share-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.share-form .field {
+  flex: 1 1 180px;
+}
+
+/* Five nowrap columns and an unbounded label do not fit a phone. Scroll the
+   table inside its own box rather than letting it widen the page body. */
+.shares-scroll {
+  overflow-x: auto;
+}
+
+/* Live links, set like the edge print: mono, uppercase heads, data unemphatic. */
+.shares {
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.shares th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border-bottom: 1px solid var(--line);
+  padding: 0 18px 6px 0;
+}
+
+.shares td {
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 6px 18px 6px 0;
+  white-space: nowrap;
+}
+
+/* Expired links are listed, not hidden — TTL deletion lags up to 48 hours. */
+.shares .expired td {
+  opacity: 0.5;
 }
 
 .share-link {

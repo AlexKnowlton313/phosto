@@ -43,6 +43,21 @@ export interface FolderView {
  */
 export const ORPHAN_FOLDER_ID = 'orphaned';
 
+/**
+ * A live link as the list route returns it: `tokenHash` stripped and replaced by
+ * its first 12 hex characters. There is no URL here and there never can be —
+ * only the hash is stored.
+ */
+export interface ShareSummary {
+  id: string;
+  folderId: string;
+  createdAt: string;
+  /** Unix seconds; also the DynamoDB TTL attribute. Not ISO, unlike createdAt. */
+  expiresAt: number;
+  allowDownload: boolean;
+  label?: string;
+}
+
 export interface ShareView {
   folder: { name: string; photoCount: number };
   permissions: { allowDownload: boolean };
@@ -179,15 +194,24 @@ export const adminApi = (token: string) => ({
       token,
     ),
 
+  /** The URL comes back exactly once — only the token's hash is persisted. */
   createShare: (
     folderId: string,
-    options: { expiresInDays: number; allowDownload: boolean },
+    options: { expiresInDays: number; allowDownload: boolean; label?: string },
   ) =>
     request<{ url: string; expiresInDays: number }>(
       `/api/folders/${folderId}/shares`,
       { method: 'POST', body: JSON.stringify(options) },
       token,
     ),
+
+  /** Includes expired shares: TTL deletion lags, and the query does not filter. */
+  listShares: (folderId: string) =>
+    request<{ shares: ShareSummary[] }>(`/api/folders/${folderId}/shares`, {}, token),
+
+  /** `id` is the 12-hex prefix from `listShares`; the route resolves it by prefix. */
+  revokeShare: (folderId: string, id: string) =>
+    request<void>(`/api/folders/${folderId}/shares/${id}`, { method: 'DELETE' }, token),
 });
 
 // ----------------------------------------------------------------- public API

@@ -217,7 +217,10 @@ naming them, and deleting the folder then removes the last handle to a
 photograph that is still sitting in the bucket.
 
 Share tokens are stored SHA-256 hashed. `getShare` checks expiry in code because
-DynamoDB TTL deletion can lag up to 48 hours.
+DynamoDB TTL deletion can lag up to 48 hours — which is also why the admin's share
+list greys expired links rather than hiding them: they are really still there. The
+list route strips `tokenHash` down to a 12-hex `id` and no route can return a share
+URL a second time, so the UI has to say that rather than look like it lost one.
 
 ## Derivatives
 
