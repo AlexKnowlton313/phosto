@@ -6,11 +6,13 @@ Select several frames on the contact sheet and download them in one action.
 
 Nothing on the client. The server needs no changes at all:
 
-- `POST /api/folders/<id>/photos/<photoId>/original|raw` (`functions/api/index.ts:462`)
-  and the share equivalent (`functions/api/index.ts:513`) already mint a one-off signed URL per object.
+- `POST /api/folders/<id>/photos/<photoId>/original|raw` (`functions/api/index.ts:553`)
+  and the share equivalent, JPEG-only (`functions/api/index.ts:604`), already mint a
+  one-off signed URL per object.
 - `saveAs()` in `web/src/api.ts` already triggers a browser download from one.
-- Permission gating already lives in `shareDownload` — `allowDownload` and
-  `allowRaw` are checked per request, so a batch cannot widen what a share allows.
+- Permission gating already lives in `shareDownload` — `allowDownload` is checked
+  per request, so a batch cannot widen what a share allows. RAW has no share route,
+  so a batch cannot reach one either.
 
 The whole feature is client-side.
 
@@ -27,8 +29,9 @@ The lazy version, and the one to ship first.
    with a checkbox affordance that appears on hover/focus in the frame corner.
    Escape clears the selection.
 3. **Toolbar actions** appear only when `selected.size > 0`: `n selected`,
-   `Download JPEGs`, `Download RAWs` (only if `showNegatives` and at least one
-   selected frame has `hasRaw`), `Clear`.
+   `Download JPEGs`, `Clear`. In the admin view only, add `Download RAWs` when at
+   least one selected frame has `hasRaw` — the share payload never sets it, so the
+   button cannot appear for a viewer without a second gate.
 4. **The download loop** reuses the existing single-photo call:
 
    ```ts
@@ -52,7 +55,7 @@ Cost of phase 1: no new routes, no new dependency, roughly 60 lines of UI.
   response — the signing key is already cached per container
   (`functions/shared/signing.ts:14`), so the marginal cost of the 50th URL is
   negligible; it is the HTTP round-trips that hurt.
-- `DOWNLOAD_TTL` is 5 minutes (`functions/api/index.ts:36`). A 200-file batch on a
+- `DOWNLOAD_TTL` is 5 minutes (`functions/api/index.ts:41`). A 200-file batch on a
   slow connection can outlive the URL signed at the start of the loop. Mint each URL
   immediately before its download — which the loop above does — rather than
   pre-minting the whole batch.

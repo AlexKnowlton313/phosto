@@ -291,7 +291,6 @@ async function main() {
           createdAt: now,
           updatedAt: now,
           photoCount: 0,
-          rawVisibleDefault: false,
         },
       }),
     );

@@ -82,7 +82,7 @@ express the permission — applied one level down.
 
 Originals and RAWs stay where they are. They are reached through one-off signed
 URLs minted per request by `shareDownload` (`functions/api/index.ts:328`), which
-already gates on `allowDownload` / `allowRaw` in code. Adding a hidden check there
+already gates on `allowDownload` in code. Adding a hidden check there
 is consistent with how downloads are already protected:
 
 ```ts
@@ -150,8 +150,8 @@ next to the re-decode that [move-photos.md](move-photos.md) accepts.
 
 ## Admin UI
 
-`hidden` joins the fields `presentPhoto` returns, then the admin view mirrors the
-negatives toggle exactly (`web/src/views/Admin.tsx:245`):
+`hidden` joins the fields `presentPhoto` returns, then the admin view counts them
+off the loaded photos — no extra request, no extra state to keep in sync:
 
 ```tsx
 const hiddenCount = photos.filter((p) => p.hidden).length;
@@ -160,18 +160,20 @@ const hiddenCount = photos.filter((p) => p.hidden).length;
 - Grid filters out hidden frames by default.
 - `Show hidden (n)` appears in the toolbar only when `hiddenCount > 0`.
 - Lightbox gets a `Hide` / `Unhide` button, admin-only via the same optional-prop
-  pattern as `onDelete` (`web/src/components/Lightbox.tsx:121`).
+  pattern as `onDelete` (`web/src/components/Lightbox.tsx:129`).
 - Frame numbering: number the *visible* sequence. A contact sheet numbers the
   frames on the sheet, and a gap at 07 would advertise that something was removed —
   which is the opposite of the point.
 
-Persisting the toggle per folder, the way [folder-settings.md](folder-settings.md)
-proposes for `rawVisibleDefault`, is not worth it here. Hidden should default to
-out of sight every time the folder is opened; that is the whole feature.
+Do not persist the toggle per folder. Hidden should default to out of sight every
+time the folder is opened; that is the whole feature. (This is also the one toggle
+worth keeping — `Show negatives` was deleted because RAW is never shared and the
+owner always wants to see it, which is the opposite of hidden.)
 
 ### Design
 
-Neither `--amber` (negatives/RAW) nor `--safelight` (destructive) applies — hiding
+Neither `--amber` (negatives/RAW, now only the Download RAW button) nor
+`--safelight` (destructive) applies — hiding
 is neither, and both accents are spoken for. When hidden frames are shown, render
 them at reduced opacity with a `HIDDEN` tag set like the existing `frame-pending`
 label. Reads as a frame marked out on the sheet rather than a new colour language.

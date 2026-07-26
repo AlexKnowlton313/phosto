@@ -9,7 +9,6 @@ The whole server side:
 | Capability | Route | Handler |
 |---|---|---|
 | Rename | `PATCH /api/folders/<id>` | `functions/api/index.ts:413` |
-| RAW visible by default | same route, `rawVisibleDefault` | same |
 | Delete folder | `DELETE /api/folders/<id>` | `functions/api/index.ts:427` |
 
 `db.updateFolder` (`functions/shared/db.ts:84`) already skips undefined fields and
@@ -34,21 +33,6 @@ render the affordance only when it is supplied — the same admin-only pattern
 
 Empty or whitespace-only input cancels. The API enforces this too, so it fails
 safe either way.
-
-## RAW visible by default
-
-`rawVisibleDefault` is read on every folder open — `setShowNegatives(
-folder.rawVisibleDefault)` (`web/src/views/Admin.tsx:49`) — but is hardcoded
-`false` at creation (`functions/api/index.ts:139`) and never written after. The
-plumbing is complete; only the write is missing.
-
-Make the existing negatives toggle persist its state: when the user flips
-`Show negatives`, PATCH `rawVisibleDefault` to match. No new control, no settings
-panel — the toggle simply remembers. Fire and forget with a `.catch()`; a failed
-persist should not fight the local state the user just changed.
-
-Only show it when the folder has RAW frames, which the toolbar already gates on
-(`rawCount > 0`).
 
 ## Delete folder
 

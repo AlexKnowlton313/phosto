@@ -28,14 +28,13 @@ export interface FolderView {
   name: string;
   createdAt: string;
   photoCount: number;
-  rawVisibleDefault: boolean;
   /** Derivative key is `f/<folderId>/<coverPhotoId>/thumb.webp` — no API field needed. */
   coverPhotoId?: string;
 }
 
 export interface ShareView {
   folder: { name: string; photoCount: number };
-  permissions: { allowDownload: boolean; allowRaw: boolean };
+  permissions: { allowDownload: boolean };
   photos: PhotoView[];
 }
 
@@ -144,7 +143,7 @@ export const adminApi = (token: string) => ({
 
   createShare: (
     folderId: string,
-    options: { expiresInDays: number; allowDownload: boolean; allowRaw: boolean },
+    options: { expiresInDays: number; allowDownload: boolean },
   ) =>
     request<{ url: string; expiresInDays: number }>(
       `/api/folders/${folderId}/shares`,
@@ -158,8 +157,9 @@ export const adminApi = (token: string) => ({
 export const shareApi = {
   open: (shareToken: string) => request<ShareView>(`/api/share/${shareToken}`),
 
-  download: (shareToken: string, photoId: string, kind: 'original' | 'raw') =>
-    request<DownloadTarget>(`/api/share/${shareToken}/photos/${photoId}/${kind}`, {
+  /** JPEGs only — a share has no RAW route to call. */
+  download: (shareToken: string, photoId: string) =>
+    request<DownloadTarget>(`/api/share/${shareToken}/photos/${photoId}/original`, {
       method: 'POST',
     }),
 };

@@ -63,8 +63,8 @@ They are separate for two independent reasons, and collapsing them breaks both:
 
 1. **Sharing is enforced structurally, not by API logic.** A share cookie is scoped
    to `f/<folderId>/*`, so it *cannot* reach an original or a RAW no matter how the
-   API behaves. Downloads are one-off signed URLs gated on `allowDownload` /
-   `allowRaw`.
+   API behaves. JPEG downloads are one-off signed URLs gated on `allowDownload`;
+   RAW is owner-only and has no share route at all.
 2. **The derive Lambda listens on `orig/` and `raw/` and writes to `f/`.** Sharing a
    prefix between input and output would make every write retrigger the function.
 
@@ -85,7 +85,9 @@ logged rather than returned.
 `presentPhoto` shapes both the admin and the share response. It takes
 `allowDownload` / `allowRaw` and omits what the caller may not have, so original
 and RAW keys never appear in a payload that isn't permitted to fetch them — the API
-counterpart to the prefix split above.
+counterpart to the prefix split above. `openShare` always passes `allowRaw: false`:
+shares are JPEG-only by construction, so the admin view is the only place `hasRaw`
+is ever true and the only place a Download RAW button appears.
 
 Two credential types come out of this Lambda and they are not interchangeable:
 signed **cookies** for derivatives (admin gets `f/*`, a share gets

@@ -4,7 +4,6 @@ import type { PhotoView } from '../api';
 interface Props {
   photos: PhotoView[];
   index: number;
-  showNegatives: boolean;
   onClose: () => void;
   onNavigate: (index: number) => void;
   onDownload: (photo: PhotoView, kind: 'original' | 'raw') => void;
@@ -17,7 +16,6 @@ interface Props {
 export function Lightbox({
   photos,
   index,
-  showNegatives,
   onClose,
   onNavigate,
   onDownload,
@@ -116,7 +114,8 @@ export function Lightbox({
             Download JPEG
           </button>
         )}
-        {showNegatives && photo.hasRaw && (
+        {/* The API zeroes hasRaw on a share, so only the owner ever sees this. */}
+        {photo.hasRaw && (
           <button className="btn btn-negatives" onClick={() => onDownload(photo, 'raw')}>
             Download RAW
           </button>

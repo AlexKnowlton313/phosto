@@ -5,8 +5,6 @@ export interface Folder {
   updatedAt: string;
   photoCount: number;
   coverPhotoId?: string;
-  /** Whether the RAW toggle starts on for the owner's own view. */
-  rawVisibleDefault: boolean;
 }
 
 export interface Photo {
@@ -44,7 +42,6 @@ export interface Share {
   /** Unix seconds; also the DynamoDB TTL attribute. */
   expiresAt: number;
   allowDownload: boolean;
-  allowRaw: boolean;
   label?: string;
 }
 

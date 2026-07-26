@@ -6,7 +6,6 @@ import { Lightbox } from '../components/Lightbox';
 export function Share({ token }: { token: string }) {
   const [data, setData] = useState<ShareView>();
   const [error, setError] = useState<string>();
-  const [showNegatives, setShowNegatives] = useState(false);
   const [openIndex, setOpenIndex] = useState<number>();
 
   useEffect(() => {
@@ -38,33 +37,13 @@ export function Share({ token }: { token: string }) {
     );
   }
 
-  const download = async (photoId: string, kind: 'original' | 'raw') => {
-    saveAs(await shareApi.download(token, photoId, kind));
+  const download = async (photoId: string) => {
+    saveAs(await shareApi.download(token, photoId));
   };
-
-  const rawFrames = data.photos.filter((p) => p.hasRaw).length;
-  const hasNegatives = data.permissions.allowRaw && rawFrames > 0;
 
   return (
     <>
       <EdgeHeader name={data.folder.name} photos={data.photos} />
-
-      {hasNegatives && (
-        <div className="toolbar">
-          <button
-            className="btn btn-negatives"
-            aria-pressed={showNegatives}
-            onClick={() => setShowNegatives((on) => !on)}
-          >
-            {showNegatives ? 'Hide negatives' : 'Show negatives'}
-          </button>
-          <span className="note">
-            {rawFrames === 1
-              ? '1 frame has a RAW file'
-              : `${rawFrames} frames have a RAW file`}
-          </span>
-        </div>
-      )}
 
       {data.photos.length === 0 ? (
         <div className="empty">
@@ -72,21 +51,16 @@ export function Share({ token }: { token: string }) {
           <p className="note">This folder has no finished photos.</p>
         </div>
       ) : (
-        <ContactSheet
-          photos={data.photos}
-          showNegatives={showNegatives}
-          onOpen={setOpenIndex}
-        />
+        <ContactSheet photos={data.photos} onOpen={setOpenIndex} />
       )}
 
       {openIndex !== undefined && (
         <Lightbox
           photos={data.photos}
           index={openIndex}
-          showNegatives={showNegatives}
           onClose={() => setOpenIndex(undefined)}
           onNavigate={setOpenIndex}
-          onDownload={(photo, kind) => download(photo.photoId, kind)}
+          onDownload={(photo) => download(photo.photoId)}
         />
       )}
     </>

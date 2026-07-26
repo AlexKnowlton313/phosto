@@ -3,19 +3,16 @@ import type { PhotoView } from '../api';
 
 interface Props {
   photos: PhotoView[];
-  showNegatives: boolean;
   onOpen: (index: number) => void;
 }
 
 function Frame({
   photo,
   index,
-  showNegatives,
   onOpen,
 }: {
   photo: PhotoView;
   index: number;
-  showNegatives: boolean;
   onOpen: () => void;
 }) {
   const [loaded, setLoaded] = useState(false);
@@ -46,12 +43,11 @@ function Frame({
       )}
 
       <span className="frame-no">{frameNumber}</span>
-      {showNegatives && photo.hasRaw && <span className="frame-raw">RAW</span>}
     </button>
   );
 }
 
-export function ContactSheet({ photos, showNegatives, onOpen }: Props) {
+export function ContactSheet({ photos, onOpen }: Props) {
   return (
     <div className="sheet">
       {photos.map((photo, index) => (
@@ -59,7 +55,6 @@ export function ContactSheet({ photos, showNegatives, onOpen }: Props) {
           key={photo.photoId}
           photo={photo}
           index={index}
-          showNegatives={showNegatives}
           onOpen={() => onOpen(index)}
         />
       ))}

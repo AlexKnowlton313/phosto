@@ -83,7 +83,7 @@ export async function listFolders(): Promise<Folder[]> {
 
 export async function updateFolder(
   folderId: string,
-  patch: Partial<Pick<Folder, 'name' | 'coverPhotoId' | 'rawVisibleDefault'>>,
+  patch: Partial<Pick<Folder, 'name' | 'coverPhotoId'>>,
 ): Promise<void> {
   if (!hasPatch(patch)) return;
 

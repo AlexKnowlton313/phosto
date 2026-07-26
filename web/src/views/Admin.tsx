@@ -25,7 +25,6 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const [folders, setFolders] = useState<FolderView[]>();
   const [current, setCurrent] = useState<FolderView>();
   const [photos, setPhotos] = useState<PhotoView[]>([]);
-  const [showNegatives, setShowNegatives] = useState(false);
   const [openIndex, setOpenIndex] = useState<number>();
   const [upload, setUpload] = useState<UploadState>();
   const [shareUrl, setShareUrl] = useState<string>();
@@ -49,7 +48,6 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     async (folder: FolderView) => {
       setCurrent(folder);
       setShareUrl(undefined);
-      setShowNegatives(folder.rawVisibleDefault);
       const { photos } = await api.listPhotos(folder.folderId);
       setPhotos(photos);
     },
@@ -135,13 +133,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   const share = async () => {
     if (!current) return;
-    const allowRaw = window.confirm(
-      'Include RAW files in this share?\n\nOK includes them behind the negatives toggle. Cancel shares JPEGs only.',
-    );
     const { url } = await api.createShare(current.folderId, {
       expiresInDays: 30,
       allowDownload: true,
-      allowRaw,
     });
     setShareUrl(url);
   };
@@ -240,8 +234,6 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   // ------------------------------------------------------------- folder detail
 
-  const rawCount = photos.filter((p) => p.hasRaw).length;
-
   return (
     <>
       <EdgeHeader name={current.name} photos={photos} />
@@ -262,16 +254,6 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           hidden
           onChange={(e) => handleFiles(e.target.files)}
         />
-
-        {rawCount > 0 && (
-          <button
-            className="btn btn-negatives"
-            aria-pressed={showNegatives}
-            onClick={() => setShowNegatives((on) => !on)}
-          >
-            {showNegatives ? 'Hide negatives' : `Show negatives (${rawCount})`}
-          </button>
-        )}
 
         <div className="spacer" />
 
@@ -318,14 +300,13 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           </p>
         </div>
       ) : (
-        <ContactSheet photos={photos} showNegatives={showNegatives} onOpen={setOpenIndex} />
+        <ContactSheet photos={photos} onOpen={setOpenIndex} />
       )}
 
       {openIndex !== undefined && (
         <Lightbox
           photos={photos}
           index={openIndex}
-          showNegatives={showNegatives}
           onClose={() => setOpenIndex(undefined)}
           onNavigate={setOpenIndex}
           onDownload={download}

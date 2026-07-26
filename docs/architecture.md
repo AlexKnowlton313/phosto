@@ -55,7 +55,7 @@ Three separate prefixes, for two reasons:
 1. **Share cookies cannot reach originals or RAWs.** A cookie scoped to `f/<id>/*`
    structurally excludes `orig/` and `raw/`, regardless of how the API behaves.
    Downloading either is a one-off signed URL, issued per object, only when the
-   share has `allowDownload` / `allowRaw`.
+   share has `allowDownload`; RAW is never shared.
 2. **No notification loop.** The derive Lambda listens on `orig/` and `raw/` and
    writes to `f/`. If derivatives shared a prefix with their inputs, every write
    would retrigger the function.

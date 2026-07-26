@@ -36,12 +36,8 @@ if (!src) {
 }
 
 const IMAGE = /\.(jpe?g|png|webp)$/i;
-const RAW = /\.(raf|dng|cr2|cr3|nef|arw|orf|rw2)$/i;
 
 const entries = readdirSync(src).filter((f) => !f.startsWith('.'));
-const rawStems = new Set(
-  entries.filter((f) => RAW.test(f)).map((f) => basename(f, extname(f))),
-);
 const images = entries.filter((f) => IMAGE.test(f)).slice(0, limit);
 
 if (images.length === 0) {
@@ -102,7 +98,8 @@ for (const file of images) {
     width: thumb.width,
     height: thumb.height,
     ready: true,
-    hasRaw: rawStems.has(stem),
+    // A share never carries RAW — the API zeroes this, so the fixture does too.
+    hasRaw: false,
     canDownload: true,
     camera: [clean(image.Make), clean(image.Model)].filter(Boolean).join(' ') || undefined,
     lens: clean(photo.LensModel),
@@ -122,7 +119,7 @@ writeFileSync(
   JSON.stringify(
     {
       folder: { name, photoCount: photos.length },
-      permissions: { allowDownload: true, allowRaw: true },
+      permissions: { allowDownload: true },
       photos,
     },
     null,
@@ -130,7 +127,5 @@ writeFileSync(
   ),
 );
 
-console.log(
-  `Wrote ${photos.length} frames (${photos.filter((p) => p.hasRaw).length} with RAW) to web/public/__preview/`,
-);
+console.log(`Wrote ${photos.length} frames to web/public/__preview/`);
 console.log('Run `npm run dev --workspace web` and open http://localhost:5173/s/demo');

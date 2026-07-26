@@ -86,7 +86,7 @@ Mitigations built into the design:
   require an explicit download click.
 - `raw/*` and `f/*` both sit behind CloudFront trusted key groups, so neither can be
   hotlinked or crawled without a signature.
-- Share tokens carry an expiry, and `allowDownload` / `allowRaw` are off by default.
+- Share tokens carry an expiry, `allowDownload` is off by default, and RAW is never shared.
 
 Set a billing alarm anyway.
 

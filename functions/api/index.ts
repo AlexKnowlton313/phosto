@@ -141,7 +141,6 @@ async function createFolder(event: APIGatewayProxyEventV2) {
     createdAt: now,
     updatedAt: now,
     photoCount: 0,
-    rawVisibleDefault: false,
   };
   await db.putFolder(folder);
   return json(201, folder);
@@ -265,7 +264,6 @@ async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
   const body = parseBody<{
     expiresInDays?: number;
     allowDownload?: boolean;
-    allowRaw?: boolean;
     label?: string;
   }>(event);
 
@@ -282,7 +280,6 @@ async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
     createdAt: now.toISOString(),
     expiresAt: Math.floor(now.getTime() / 1000) + days * 86400,
     allowDownload: body.allowDownload ?? false,
-    allowRaw: body.allowRaw ?? false,
     label: body.label,
   });
 
@@ -290,7 +287,6 @@ async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
     url: `https://${DOMAIN}/s/${token}`,
     expiresInDays: days,
     allowDownload: body.allowDownload ?? false,
-    allowRaw: body.allowRaw ?? false,
   });
 }
 
@@ -316,31 +312,29 @@ async function openShare(token: string) {
     200,
     {
       folder: { name: folder.name, photoCount: photos.length },
-      permissions: { allowDownload: share.allowDownload, allowRaw: share.allowRaw },
-      photos: photos.map((p) =>
-        presentPhoto(p, share.allowDownload, share.allowRaw),
-      ),
+      permissions: { allowDownload: share.allowDownload },
+      // Shares are JPEG-only, always: RAW never leaves the owner's own view.
+      photos: photos.map((p) => presentPhoto(p, share.allowDownload, false)),
     },
     cookieHeaders(cookies, SHARE_TTL),
   );
 }
 
 /**
- * Mints a single-object download URL. `wantRaw` decides which permission gate and
- * which prefix applies — the two are checked together so a share that allows JPEG
- * downloads can never be walked into a RAW download.
+ * Mints a single-object download URL for the original JPEG. There is no RAW
+ * counterpart — the route below only matches `original`, so a share has no path
+ * to the `raw/` prefix at all.
  */
-async function shareDownload(token: string, photoId: string, wantRaw: boolean) {
+async function shareDownload(token: string, photoId: string) {
   const share = await db.getShare(hashToken(token));
   if (!share) throw new HttpError(404, 'This link has expired or does not exist');
 
-  if (wantRaw && !share.allowRaw) throw new HttpError(403, 'RAW download not allowed');
-  if (!wantRaw && !share.allowDownload) throw new HttpError(403, 'Download not allowed');
+  if (!share.allowDownload) throw new HttpError(403, 'Download not allowed');
 
   const photo = await db.findPhoto(share.folderId, photoId);
   if (!photo) throw new HttpError(404, 'Photo not found');
 
-  return json(200, await downloadPayload(photo, wantRaw));
+  return json(200, await downloadPayload(photo, false));
 }
 
 async function downloadPayload(photo: Photo, wantRaw: boolean) {
@@ -515,7 +509,6 @@ const routes: Array<{
       await db.updateFolder(folderId, {
         name: patch.name,
         coverPhotoId: patch.coverPhotoId,
-        rawVisibleDefault: patch.rawVisibleDefault,
       });
       return json(200, await db.getFolder(folderId));
     },
@@ -608,10 +601,9 @@ const routes: Array<{
   },
   {
     method: 'POST',
-    pattern: /^\/api\/share\/([\w-]+)\/photos\/([\w-]+)\/(original|raw)$/,
+    pattern: /^\/api\/share\/([\w-]+)\/photos\/([\w-]+)\/original$/,
     admin: false,
-    handle: (_e, [token, photoId, kind]) =>
-      shareDownload(token, photoId, kind === 'raw'),
+    handle: (_e, [token, photoId]) => shareDownload(token, photoId),
   },
 
   // Not under /api — CloudFront routes the share page itself here so that the

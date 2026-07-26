@@ -175,13 +175,9 @@ button {
   color: var(--safelight);
 }
 
-/*
- * The RAW toggle. Off, it is as quiet as any other control; on, it takes the film
- * base amber, because that is what it is revealing.
- */
-.btn-negatives[aria-pressed='true'] {
+/* Download RAW — film-base amber, the one place negatives are named. */
+.btn-negatives {
   border-color: var(--amber-dim);
-  background: color-mix(in srgb, var(--amber) 12%, var(--surface));
   color: var(--amber);
 }
 
@@ -249,22 +245,6 @@ button {
 .frame:hover .frame-no,
 .frame:focus-visible .frame-no {
   opacity: 0.85;
-}
-
-/* A photo that has a negative behind it, shown only when negatives are on. */
-.frame-raw {
-  position: absolute;
-  right: 5px;
-  top: 5px;
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  padding: 2px 5px;
-  border-radius: var(--radius);
-  color: var(--amber);
-  background: rgba(23, 24, 27, 0.82);
-  border: 1px solid var(--amber-dim);
 }
 
 .frame-pending {
