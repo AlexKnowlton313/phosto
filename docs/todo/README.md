@@ -11,7 +11,6 @@ is correct if they are never built and wrong if they are.
 | Doc | Server today | Client today |
 |---|---|---|
 | [hidden-photos.md](hidden-photos.md) | none | none |
-| [move-photos.md](move-photos.md) | none | none |
 | [folder-settings.md](folder-settings.md) | complete | none |
 | [share-management.md](share-management.md) | complete | none |
 
@@ -23,10 +22,13 @@ comes up, the two things that doc got right are that a zipping Lambda is the wro
 answer — it routes the bytes around CloudFront and into a billed Lambda response —
 and that DEFLATE buys nothing on already-compressed JPEG and RAF.
 
-Three of the five need no new API routes. `move-photos` and `hidden-photos` are the
-two that need real backend work, and both move S3 objects between key prefixes —
-which is also why both can corrupt the library, or quietly weaken sharing, if the
-steps run in the wrong order. Read those two together.
+Moving photos between folders shipped on 2026-07-26 and its doc is gone. Read
+`movePhotoAndObjects` in `functions/api/index.ts` before touching `hidden-photos`:
+it is the worked example of the ordering both features need — record first, then
+`orig/` (which retriggers derivation at the new key), then `raw/`, and only then
+the old objects. `hidden-photos` is the one remaining feature that moves S3
+objects between key prefixes, which is why it can quietly weaken sharing if the
+steps run in the wrong order.
 
 Read [../architecture.md](../architecture.md) first if you have not — the three-way
 prefix split it describes constrains most of them.

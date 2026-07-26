@@ -19,6 +19,9 @@ import { Lightbox } from '../components/Lightbox';
 /** Enough to saturate a connection without starving the UI thread. */
 const UPLOAD_CONCURRENCY = 4;
 
+/** Mirrors the server's cap in `movePhotos`, which is bounded by a 15s timeout. */
+const MOVE_BATCH = 25;
+
 interface UploadState {
   total: number;
   done: number;
@@ -191,6 +194,58 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     }
   };
 
+  const moveSelected = async () => {
+    if (!current || !folders) return;
+    const others = folders.filter((f) => f.folderId !== current.folderId);
+
+    // Matches the server's cap. Said here rather than letting the 400 come back,
+    // because by then the user has already picked a destination.
+    if (selected.size > MOVE_BATCH) {
+      setError(`Move up to ${MOVE_BATCH} frames at a time — ${selected.size} selected`);
+      return;
+    }
+
+    // A numbered prompt rather than a dialog: one user, no modal infrastructure,
+    // and every other choice in this app is already made this way.
+    const answer = window.prompt(
+      `Move ${selected.size} frame(s) to which roll?\n\n` +
+        others.map((f, i) => `${i + 1}. ${f.name}`).join('\n'),
+    );
+    const target = others[Number(answer) - 1];
+    if (!target) return;
+
+    setError(undefined);
+    setBatching(true);
+
+    try {
+      const ids = [...selected];
+      const { moved, failed } = await api.movePhotos(
+        current.folderId,
+        ids,
+        target.folderId,
+      );
+      if (failed.length > 0) {
+        // Named, not counted: a move is per-photo, so the ones left behind are
+        // the only thing worth retrying and the user has to know which they are.
+        const names = failed.map(
+          (f) => photos?.find((p) => p.photoId === f.photoId)?.basename ?? f.photoId,
+        );
+        setError(
+          `Moved ${moved.length} of ${ids.length} to ${target.name}. Left behind: ${names.join(', ')}`,
+        );
+      }
+      clear();
+      setOpenIndex(undefined);
+      await refresh();
+      // Both rolls' photoCounts just changed, and `current` is read off this list.
+      setFolders((await api.listFolders()).folders);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBatching(false);
+    }
+  };
+
   const setCover = async (photo: PhotoView) => {
     if (!current) return;
     const folder = await api.updateFolder(current.folderId, {
@@ -329,6 +384,11 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
                 onClick={() => downloadSelected('raw')}
               >
                 Download RAWs
+              </button>
+            )}
+            {(folders?.length ?? 0) > 1 && (
+              <button className="btn" disabled={batching} onClick={moveSelected}>
+                Move to…
               </button>
             )}
             <button className="btn" onClick={clear}>

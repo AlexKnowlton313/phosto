@@ -5,6 +5,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import type { Folder, Photo, Share } from './types.js';
@@ -97,16 +98,21 @@ export async function updateFolder(
   );
 }
 
+/**
+ * The photoCount bump as a bare command shape, so `movePhoto` can put the same
+ * guarded expression inside its transaction rather than restating it. The
+ * condition is what makes a move fail cleanly when a folder is deleted mid-flight.
+ */
+const photoCountUpdate = (folderId: string, delta: number, extra = '') => ({
+  TableName: TABLE,
+  Key: { pk: folderPk(folderId), sk: 'META' },
+  UpdateExpression: `SET photoCount = if_not_exists(photoCount, :zero) + :delta${extra}`,
+  ExpressionAttributeValues: { ':zero': 0, ':delta': delta },
+  ConditionExpression: 'attribute_exists(pk)',
+});
+
 export async function bumpPhotoCount(folderId: string, delta: number): Promise<void> {
-  await ddb.send(
-    new UpdateCommand({
-      TableName: TABLE,
-      Key: { pk: folderPk(folderId), sk: 'META' },
-      UpdateExpression: 'SET photoCount = if_not_exists(photoCount, :zero) + :delta',
-      ExpressionAttributeValues: { ':zero': 0, ':delta': delta },
-      ConditionExpression: 'attribute_exists(pk)',
-    }),
-  );
+  await ddb.send(new UpdateCommand(photoCountUpdate(folderId, delta)));
 }
 
 export async function deleteFolder(folderId: string): Promise<void> {
@@ -183,6 +189,65 @@ export async function updatePhoto(
       TableName: TABLE,
       Key: { pk: folderPk(photo.folderId), sk: photoSk(photo.uploadedAt, photo.photoId) },
       ...setExpression(patch),
+    }),
+  );
+}
+
+/**
+ * Repoints one photo record at another folder, atomically.
+ *
+ * `pk` carries the folder, so this crosses partitions and cannot be an update —
+ * it is a delete plus a put. Both photoCounts move with it in the same
+ * transaction, so a failure can never leave a photo counted twice or listed in
+ * two folders. The sort key is unchanged: `uploadedAt` is half of it and is
+ * deliberately not `takenAt` (see `photoSk`), so rewriting it would reorder the
+ * photo for nothing.
+ *
+ * Moving the record is only the first step of a move — the S3 objects still have
+ * to follow — so this is not exported as a whole-move primitive.
+ */
+export async function movePhoto(
+  source: Folder,
+  photo: Photo,
+  toFolderId: string,
+): Promise<void> {
+  const key = { sk: photoSk(photo.uploadedAt, photo.photoId) };
+
+  await ddb.send(
+    new TransactWriteCommand({
+      TransactItems: [
+        { Delete: { TableName: TABLE, Key: { pk: folderPk(photo.folderId), ...key } } },
+        {
+          Put: {
+            TableName: TABLE,
+            Item: {
+              // `photo` is the raw item off a Query, so it still carries the
+              // source `pk` — spread it FIRST or it overwrites the destination
+              // key and the transaction becomes two operations on one item,
+              // which DynamoDB rejects outright. The Photo type does not
+              // declare pk/sk, so tsc cannot catch the wrong order here.
+              ...photo,
+              pk: folderPk(toFolderId),
+              ...key,
+              folderId: toFolderId,
+              // Dropped, not carried: the derivatives under the destination
+              // prefix do not exist until the copy of the original retriggers
+              // the derive Lambda. Claiming ready here would point the grid at
+              // keys that are not written yet.
+              derivedAt: undefined,
+            },
+          },
+        },
+        {
+          Update: photoCountUpdate(
+            photo.folderId,
+            -1,
+            // A cover pointing into another folder renders as a broken tile.
+            source.coverPhotoId === photo.photoId ? ' REMOVE coverPhotoId' : '',
+          ),
+        },
+        { Update: photoCountUpdate(toFolderId, 1) },
+      ],
     }),
   );
 }

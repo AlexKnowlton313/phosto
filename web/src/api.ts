@@ -134,6 +134,18 @@ export const adminApi = (token: string) => ({
       token,
     ),
 
+  /**
+   * Physical move — the objects follow the record, because the key prefix is
+   * what a share cookie is scoped to. Photos come back as DEVELOPING until the
+   * copy of the original has retriggered derivation under the new folder.
+   */
+  movePhotos: (folderId: string, photoIds: string[], toFolderId: string) =>
+    request<{ moved: string[]; failed: Array<{ photoId: string; message: string }> }>(
+      `/api/folders/${folderId}/photos/move`,
+      { method: 'POST', body: JSON.stringify({ photoIds, toFolderId }) },
+      token,
+    ),
+
   download: (folderId: string, photoId: string, kind: 'original' | 'raw') =>
     request<DownloadTarget>(
       `/api/folders/${folderId}/photos/${photoId}/${kind}`,

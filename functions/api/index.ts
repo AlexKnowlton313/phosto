@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
+  CopyObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -230,20 +231,26 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
   return json(200, { uploads });
 }
 
+/** Every object a photo owns under one folder — what delete removes and what a
+ * move leaves behind at the source. */
+const photoObjectKeys = (folderId: string, photo: Photo) => [
+  ...Object.keys(DERIVATIVE_SIZES).map((name) =>
+    derivedKey(folderId, photo.photoId, name as keyof typeof DERIVATIVE_SIZES),
+  ),
+  // Photos derived before the middle size was dropped still have one in S3.
+  // Listed explicitly so deleting them does not leave a billed orphan behind.
+  `${PREFIX_DERIVED}${folderId}/${photo.photoId}/medium.webp`,
+  ...(photo.originalExt
+    ? [originalKey(folderId, photo.photoId, photo.originalExt)]
+    : []),
+  ...(photo.rawExt ? [rawKey(folderId, photo.photoId, photo.rawExt)] : []),
+];
+
 async function deletePhotoAndObjects(folderId: string, photoId: string) {
   const photo = await db.findPhoto(folderId, photoId);
   if (!photo) throw new HttpError(404, 'Photo not found');
 
-  const keys = [
-    ...Object.keys(DERIVATIVE_SIZES).map((name) =>
-      derivedKey(folderId, photoId, name as keyof typeof DERIVATIVE_SIZES),
-    ),
-    // Photos derived before the middle size was dropped still have one in S3.
-    // Listed explicitly so deleting them does not leave a billed orphan behind.
-    `${PREFIX_DERIVED}${folderId}/${photoId}/medium.webp`,
-    ...(photo.originalExt ? [originalKey(folderId, photoId, photo.originalExt)] : []),
-    ...(photo.rawExt ? [rawKey(folderId, photoId, photo.rawExt)] : []),
-  ];
+  const keys = photoObjectKeys(folderId, photo);
 
   await s3.send(
     new DeleteObjectsCommand({
@@ -255,6 +262,130 @@ async function deletePhotoAndObjects(folderId: string, photoId: string) {
   await db.bumpPhotoCount(folderId, -1);
 
   return json(204, {});
+}
+
+/**
+ * Moves one photo, record first and objects after.
+ *
+ * The move is physical because the key path *is* the authorization boundary: a
+ * share cookie is signed for `f/<folderId>/*`, so a record that merely claimed a
+ * new folder would stay readable by a stale share on the old one and stay
+ * invisible to a share on the new one, with the API looking correct throughout.
+ *
+ * The order is the whole trick and cannot be rearranged:
+ *
+ * 1. The record moves first. Derive drops an event whose photo it cannot find
+ *    (`findPhoto` returns null) and nothing retries it, so an object landing
+ *    ahead of its record arrives with no derivatives, permanently.
+ * 2. Copying the original into the destination prefix retriggers derive at the
+ *    new key, which is what rebuilds `f/<dst>/…`. The derivatives are therefore
+ *    never copied by hand. The RAW copy after it returns immediately for a
+ *    paired photo and re-extracts the preview for a RAW-only one.
+ * 3. The old keys go last, derivatives included.
+ *
+ * Every step logs both keys: if this dies mid-flight the photo is stuck as
+ * DEVELOPING in the destination, and the repair is the documented re-derive
+ * copy — which needs to know where the original actually is right now.
+ */
+async function movePhotoAndObjects(
+  source: Folder,
+  photoId: string,
+  toFolderId: string,
+) {
+  const photo = await db.findPhoto(source.folderId, photoId);
+  if (!photo) throw new HttpError(404, 'Photo not found');
+
+  await db.movePhoto(source, photo, toFolderId);
+  console.log('Moved photo record', {
+    photoId,
+    from: source.folderId,
+    to: toFolderId,
+  });
+
+  for (const [from, to] of [
+    ...(photo.originalExt
+      ? [
+          [
+            originalKey(source.folderId, photoId, photo.originalExt),
+            originalKey(toFolderId, photoId, photo.originalExt),
+          ],
+        ]
+      : []),
+    ...(photo.rawExt
+      ? [
+          [
+            rawKey(source.folderId, photoId, photo.rawExt),
+            rawKey(toFolderId, photoId, photo.rawExt),
+          ],
+        ]
+      : []),
+  ]) {
+    // CopyObject reads Glacier Instant Retrieval without a restore step, so an
+    // aged RAF moves like any other object — the copy just lands in Standard
+    // and starts its own 30-day clock.
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: BUCKET,
+        CopySource: `${BUCKET}/${from}`,
+        Key: to,
+      }),
+    );
+    console.log('Copied object', { photoId, from, to });
+  }
+
+  const stale = photoObjectKeys(source.folderId, photo);
+  await s3.send(
+    new DeleteObjectsCommand({
+      Bucket: BUCKET,
+      Delete: { Objects: stale.map((Key) => ({ Key })), Quiet: true },
+    }),
+  );
+  console.log('Deleted source objects', { photoId, keys: stale, to: toFolderId });
+}
+
+/**
+ * Whole batch, one report. A 404 for frame 12 would hide the thirty that did
+ * move, so every outcome is per photo and the caller decides what to retry —
+ * including when the batch is one photo long, so the shape never changes under
+ * the client.
+ */
+async function movePhotos(event: APIGatewayProxyEventV2, folderId: string) {
+  const { toFolderId, photoIds } = parseBody<{
+    toFolderId?: string;
+    photoIds?: string[];
+  }>(event);
+
+  if (!toFolderId) throw new HttpError(400, 'toFolderId is required');
+  if (toFolderId === folderId) throw new HttpError(400, 'Already in that folder');
+  if (!Array.isArray(photoIds) || !photoIds.length) {
+    throw new HttpError(400, 'photoIds[] is required');
+  }
+  // Far below createUploads' 200: that one mints presigned URLs locally, while
+  // every photo here is a query, a transaction, up to two CopyObjects and a
+  // delete, all serial, against a 15-second Lambda timeout. A batch killed
+  // mid-loop leaves the client with no report at all, so the cap is the report.
+  if (photoIds.length > 25) throw new HttpError(400, 'Batch limited to 25 photos');
+
+  const source = await db.getFolder(folderId);
+  if (!source) throw new HttpError(404, 'Folder not found');
+  if (!(await db.getFolder(toFolderId))) {
+    throw new HttpError(404, 'Destination folder not found');
+  }
+
+  const moved: string[] = [];
+  const failed: Array<{ photoId: string; message: string }> = [];
+
+  for (const photoId of new Set(photoIds)) {
+    try {
+      await movePhotoAndObjects(source, photoId, toFolderId);
+      moved.push(photoId);
+    } catch (err) {
+      console.error('Move failed', { photoId, from: folderId, to: toFolderId, err });
+      failed.push({ photoId, message: (err as Error).message });
+    }
+  }
+
+  return json(200, { moved, failed });
 }
 
 async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
@@ -553,6 +684,15 @@ const routes: Array<{
     pattern: /^\/api\/folders\/([\w-]+)\/photos\/([\w-]+)$/,
     admin: true,
     handle: (_e, [folderId, photoId]) => deletePhotoAndObjects(folderId, photoId),
+  },
+  {
+    // Bulk only. The plan named a per-photo route too, but multi-select landed
+    // first, so `{ photoIds: [one] }` already covers it and a second path would
+    // just be a second set of semantics to keep in step.
+    method: 'POST',
+    pattern: /^\/api\/folders\/([\w-]+)\/photos\/move$/,
+    admin: true,
+    handle: (event, [folderId]) => movePhotos(event, folderId),
   },
   {
     method: 'POST',
