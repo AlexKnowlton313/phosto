@@ -256,13 +256,24 @@ export class PhostoStack extends cdk.Stack {
       },
     });
 
+    const apiIntegration =
+      new cdk.aws_apigatewayv2_integrations.HttpLambdaIntegration(
+        'ApiIntegration',
+        apiFn,
+      );
+
     httpApi.addRoutes({
       path: '/api/{proxy+}',
       methods: [cdk.aws_apigatewayv2.HttpMethod.ANY],
-      integration: new cdk.aws_apigatewayv2_integrations.HttpLambdaIntegration(
-        'ApiIntegration',
-        apiFn,
-      ),
+      integration: apiIntegration,
+    });
+
+    // The share page is rendered by the same Lambda so its HTML can carry
+    // per-folder OG tags. Public by design — it is the share link itself.
+    httpApi.addRoutes({
+      path: '/s/{proxy+}',
+      methods: [cdk.aws_apigatewayv2.HttpMethod.GET],
+      integration: apiIntegration,
     });
 
     // -------------------------------------------------------------- cloudfront
@@ -287,6 +298,9 @@ export class PhostoStack extends cdk.Stack {
     });
 
     const apiOriginDomain = `${httpApi.apiId}.execute-api.${this.region}.amazonaws.com`;
+    const apiOrigin = new origins.HttpOrigin(apiOriginDomain, {
+      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+    });
 
     /*
      * SPA routing, scoped to the default behavior.
@@ -337,14 +351,29 @@ function handler(event) {
       },
       additionalBehaviors: {
         'api/*': {
-          origin: new origins.HttpOrigin(apiOriginDomain, {
-            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
-          }),
+          origin: apiOrigin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           originRequestPolicy:
             cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+        },
+        /*
+         * The share page and its preview image, rendered by the API Lambda so a
+         * link unfurler gets the folder's own OG tags. This behavior bypasses the
+         * SpaRouting function entirely, which is the point — /s/<token> must
+         * reach the Lambda rather than be rewritten to the static index.html.
+         *
+         * No origin request policy: CACHING_OPTIMIZED forwards no cookies, so an
+         * admin's signed cookies never reach this path, and the Host header stays
+         * the API's own. The origin's `cache-control` caps the TTL at five
+         * minutes, so a revoked share stops unfurling on its own.
+         */
+        's/*': {
+          origin: apiOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          compress: true,
         },
         [`${PREFIX.derived}*`]: signedBehavior(),
         [`${PREFIX.originals}*`]: signedBehavior(),

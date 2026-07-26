@@ -139,6 +139,17 @@ the index.
   query strings `none`, so CloudFront drops it before S3. Download filenames come
   from `saveAs()` and `<a download>` in `web/src/api.ts` — same-origin, so the
   attribute is honored.
+- **`/s/*` is not a static route any more.** It has its own CloudFront behavior
+  pointing at the API Lambda, which renders `index.html` with the folder's OG
+  tags injected before `</head>` so link previews show the roll name and cover
+  (`GET /s/<token>` and `GET /s/<token>/og.webp` in `functions/api/index.ts`,
+  the only two routes outside `/api`). Three things this depends on: the head
+  must keep a literal `</head>`; the Lambda reads the *deployed* `index.html` at
+  request time, because vite's asset hashes change every build; and the behavior
+  must stay off the SpaRouting function, which would rewrite the path back to
+  the static file. The cover is streamed through the Lambda rather than copied
+  to a public prefix — `f/*` stays cookie-only, and the preview expires with the
+  share instead of leaving an orphan.
 - **`vite.config.ts` needs `define: { global: 'globalThis' }`** for
   `amazon-cognito-identity-js`, which otherwise builds clean and throws at runtime.
 

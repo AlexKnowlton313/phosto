@@ -16,6 +16,11 @@ export function Share({ token }: { token: string }) {
       .catch((err: Error) => setError(err.message));
   }, [token]);
 
+  // Tab label only — link unfurlers never run this, they read the static <title>.
+  useEffect(() => {
+    if (data) document.title = data.folder.name;
+  }, [data]);
+
   if (error) {
     return (
       <div className="shell">

@@ -1,5 +1,10 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { PutObjectCommand, S3Client, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+  DeleteObjectsCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl as presignS3 } from '@aws-sdk/s3-request-presigner';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import type {
@@ -355,6 +360,98 @@ async function downloadPayload(photo: Photo, wantRaw: boolean) {
   };
 }
 
+// -------------------------------------------------------------- link previews
+
+/*
+ * `/s/*` is served by this Lambda rather than from the bucket, so a share link
+ * unfurls with the folder's name and cover instead of the generic static title.
+ * A crawler does not run JavaScript, so the tags have to be in the HTML it gets.
+ *
+ * The cover is streamed through `/s/<token>/og.webp` rather than copied to a
+ * public prefix. That keeps `f/` reachable only with a signed cookie, keeps the
+ * plaintext token out of every durable store but this request, and lets the
+ * preview die with the share instead of outliving it as an orphaned object.
+ */
+
+/** Cached at the edge, so a revoked share stops unfurling within five minutes. */
+const PREVIEW_TTL = 300;
+
+const escapeAttr = (value: string) =>
+  value.replace(
+    /[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!,
+  );
+
+/** The share's folder, or null if the link is expired, revoked or bogus. */
+async function previewFolder(token: string): Promise<Folder | null> {
+  const share = await db.getShare(hashToken(token));
+  return share ? await db.getFolder(share.folderId) : null;
+}
+
+async function sharePage(token: string): Promise<APIGatewayProxyStructuredResultV2> {
+  const folder = await previewFolder(token);
+
+  const tags: string[] = ['<meta property="og:type" content="website">'];
+  if (folder) {
+    const url = `https://${DOMAIN}/s/${token}`;
+    tags.push(
+      `<meta property="og:title" content="${escapeAttr(folder.name)}">`,
+      `<meta property="og:url" content="${url}">`,
+      '<meta name="twitter:card" content="summary">',
+      `<meta name="twitter:title" content="${escapeAttr(folder.name)}">`,
+    );
+    if (folder.coverPhotoId) {
+      tags.push(
+        `<meta property="og:image" content="${url}/og.webp">`,
+        `<meta name="twitter:image" content="${url}/og.webp">`,
+      );
+    }
+  }
+
+  // Read the deployed file rather than embedding one: vite hashes the asset
+  // names, so an inlined copy would go stale on the next `npm run deploy`.
+  const object = await s3.send(
+    new GetObjectCommand({ Bucket: BUCKET, Key: 'index.html' }),
+  );
+  const html = await object.Body!.transformToString();
+
+  return {
+    statusCode: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': `public, max-age=${PREVIEW_TTL}`,
+    },
+    body: html.replace('</head>', `${tags.join('')}</head>`),
+  };
+}
+
+async function shareCover(token: string): Promise<APIGatewayProxyStructuredResultV2> {
+  const folder = await previewFolder(token);
+  if (!folder?.coverPhotoId) throw new HttpError(404, 'No cover for this share');
+
+  const object = await s3
+    .send(
+      new GetObjectCommand({
+        Bucket: BUCKET,
+        Key: derivedKey(folder.folderId, folder.coverPhotoId, 'thumb'),
+      }),
+    )
+    .catch(() => {
+      // A cover whose photo was deleted. The roll list degrades the same way.
+      throw new HttpError(404, 'No cover for this share');
+    });
+
+  return {
+    statusCode: 200,
+    headers: {
+      'content-type': 'image/webp',
+      'cache-control': `public, max-age=${PREVIEW_TTL}`,
+    },
+    body: Buffer.from(await object.Body!.transformToByteArray()).toString('base64'),
+    isBase64Encoded: true,
+  };
+}
+
 // ---------------------------------------------------------------------- router
 
 const routes: Array<{
@@ -515,6 +612,21 @@ const routes: Array<{
     admin: false,
     handle: (_e, [token, photoId, kind]) =>
       shareDownload(token, photoId, kind === 'raw'),
+  },
+
+  // Not under /api — CloudFront routes the share page itself here so that the
+  // HTML a link unfurler receives carries the folder's own OG tags.
+  {
+    method: 'GET',
+    pattern: /^\/s\/([\w-]+)$/,
+    admin: false,
+    handle: (_e, [token]) => sharePage(token),
+  },
+  {
+    method: 'GET',
+    pattern: /^\/s\/([\w-]+)\/og\.webp$/,
+    admin: false,
+    handle: (_e, [token]) => shareCover(token),
   },
 ];
 
