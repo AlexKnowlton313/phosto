@@ -391,7 +391,7 @@ async function sharePage(token: string): Promise<APIGatewayProxyStructuredResult
     tags.push(
       `<meta property="og:title" content="${escapeAttr(folder.name)}">`,
       `<meta property="og:url" content="${url}">`,
-      '<meta name="twitter:card" content="summary">',
+      '<meta name="twitter:card" content="summary_large_image">',
       `<meta name="twitter:title" content="${escapeAttr(folder.name)}">`,
     );
     if (folder.coverPhotoId) {
@@ -423,11 +423,17 @@ async function shareCover(token: string): Promise<APIGatewayProxyStructuredResul
   const folder = await previewFolder(token);
   if (!folder?.coverPhotoId) throw new HttpError(404, 'No cover for this share');
 
+  // `large`, not `thumb`. Apple's TN3156 wants an og:image at least 900px wide
+  // and warns that the size it renders at varies by device: the 400px thumb is
+  // enough for the small preview bubble in Messages on macOS but gets dropped by
+  // the full-width card on iOS. `large` is 2400px; a webp that size lands well
+  // under both Apple's 10 MB preview budget and the tighter real ceiling here,
+  // which is Lambda's 6 MB response cap on the base64 body below.
   const object = await s3
     .send(
       new GetObjectCommand({
         Bucket: BUCKET,
-        Key: derivedKey(folder.folderId, folder.coverPhotoId, 'thumb'),
+        Key: derivedKey(folder.folderId, folder.coverPhotoId, 'large'),
       }),
     )
     .catch(() => {
@@ -625,7 +631,11 @@ const routes: Array<{
 export const handler = async (
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> => {
-  const method = event.requestContext.http.method;
+  // HEAD is dispatched as GET: the table has no HEAD entries, and every GET
+  // handler here is a read. CloudFront drops the response body for a HEAD before
+  // it reaches the client, so the handler needn't know the difference.
+  const raw = event.requestContext.http.method;
+  const method = raw === 'HEAD' ? 'GET' : raw;
   const path = event.rawPath.replace(/\/+$/, '') || '/';
 
   try {

@@ -23,7 +23,10 @@ interface UploadState {
 export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const api = adminApi(token);
   const [folders, setFolders] = useState<FolderView[]>();
-  const [current, setCurrent] = useState<FolderView>();
+  // The open folder lives in location.hash, not in state, so the browser's
+  // back button and a reload both land where the user expects. `#<folderId>`
+  // rather than a path because /f/* is a CloudFront behaviour, not the SPA.
+  const [folderId, setFolderId] = useState(() => location.hash.slice(1));
   const [photos, setPhotos] = useState<PhotoView[]>([]);
   const [openIndex, setOpenIndex] = useState<number>();
   const [upload, setUpload] = useState<UploadState>();
@@ -44,37 +47,41 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const openFolder = useCallback(
-    async (folder: FolderView) => {
-      setCurrent(folder);
-      setShareUrl(undefined);
-      const { photos } = await api.listPhotos(folder.folderId);
-      setPhotos(photos);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [token],
-  );
+  useEffect(() => {
+    const sync = () => setFolderId(location.hash.slice(1));
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+
+  const current = folders?.find((f) => f.folderId === folderId);
 
   const refresh = useCallback(async () => {
-    if (!current) return;
-    const { photos } = await api.listPhotos(current.folderId);
+    if (!folderId) return;
+    const { photos } = await api.listPhotos(folderId);
     setPhotos(photos);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current, token]);
+  }, [folderId, token]);
+
+  useEffect(() => {
+    setPhotos([]);
+    setShareUrl(undefined);
+    setOpenIndex(undefined);
+    refresh().catch((err: Error) => setError(err.message));
+  }, [refresh]);
 
   // Derivatives land a few seconds after upload, so poll while any are pending.
   useEffect(() => {
-    if (!current || photos.every((p) => p.ready)) return;
+    if (!folderId || photos.every((p) => p.ready)) return;
     const timer = setInterval(refresh, 4000);
     return () => clearInterval(timer);
-  }, [current, photos, refresh]);
+  }, [folderId, photos, refresh]);
 
   const newFolder = async () => {
     const name = window.prompt('Name this roll');
     if (!name?.trim()) return;
     const folder = await api.createFolder(name.trim());
     setFolders((prev) => [folder, ...(prev ?? [])]);
-    openFolder(folder);
+    location.hash = folder.folderId;
   };
 
   const handleFiles = async (files: FileList | null) => {
@@ -150,7 +157,6 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     const folder = await api.updateFolder(current.folderId, {
       coverPhotoId: photo.photoId,
     });
-    setCurrent(folder);
     setFolders((prev) => prev?.map((f) => (f.folderId === folder.folderId ? folder : f)));
     setOpenIndex(undefined);
   };
@@ -165,7 +171,17 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   // ------------------------------------------------------------------ folders
 
+  // A reload with a hash arrives before the folder list does; don't flash the
+  // roll index on the way to the folder the user actually asked for.
   if (!current) {
+    if (folderId && !folders) {
+      return (
+        <div className="empty">
+          <p className="note">Loading…</p>
+        </div>
+      );
+    }
+
     return (
       <>
         <header className="edge">
@@ -208,7 +224,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
               <button
                 key={folder.folderId}
                 className={folder.coverPhotoId ? 'roll roll-cover' : 'roll'}
-                onClick={() => openFolder(folder)}
+                onClick={() => (location.hash = folder.folderId)}
               >
                 {folder.coverPhotoId && (
                   // alt="" so a deleted or moved cover collapses to the plain
@@ -239,7 +255,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       <EdgeHeader name={current.name} photos={photos} />
 
       <div className="toolbar">
-        <button className="btn" onClick={() => setCurrent(undefined)}>
+        <button className="btn" onClick={() => (location.hash = '')}>
           ← All rolls
         </button>
 

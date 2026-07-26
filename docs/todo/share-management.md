@@ -6,9 +6,9 @@ See which links are live on a roll and kill one.
 
 The full server side, with no client at all:
 
-- `GET /api/folders/<id>/shares` (`functions/api/index.ts:472`) returns each share
+- `GET /api/folders/<id>/shares` (`functions/api/index.ts:563`) returns each share
   with `tokenHash` stripped and replaced by `id: tokenHash.slice(0, 12)`
-- `DELETE /api/folders/<id>/shares/<id>` (`functions/api/index.ts:494`) resolves
+- `DELETE /api/folders/<id>/shares/<id>` (`functions/api/index.ts:584`) resolves
   that short id by prefix match and deletes the share
 - `db.listSharesForFolder` queries `gsi1` on `FOLDER#<id>` / `SHARE#` prefix
 
@@ -19,7 +19,7 @@ should stay even while unused.
 ## The link cannot be shown again
 
 `createShare` returns the URL exactly once and stores only the SHA-256 of the token
-(`functions/api/index.ts:271`). A leaked table yields no working links, which is
+(`functions/api/index.ts:274`). A leaked table yields no working links, which is
 the point — and it means the list can never redisplay a share URL. It shows what a
 link *is* and *does*, not how to open it.
 
@@ -29,20 +29,21 @@ looking for it in DynamoDB.
 ## What the list shows
 
 The response already carries everything: `folderId`, `createdAt`, `expiresAt`,
-`allowDownload`, `allowRaw`, `label`, and the short `id`.
+`allowDownload`, `label`, and the short `id`. There is no RAW column — shares are
+JPEG-only by construction, so every row would read the same.
 
 Render as a small table under the folder toolbar, monospace, film-edge styling to
 match the header:
 
 ```
-LABEL          CREATED       EXPIRES        DOWNLOAD  RAW    
-for mum        18 Jul 2026   in 12 days     yes       no      [Revoke]
-—              02 Jul 2026   expired         no       no      [Revoke]
+LABEL          CREATED       EXPIRES        DOWNLOAD
+for mum        18 Jul 2026   in 12 days     yes        [Revoke]
+—              02 Jul 2026   expired        no         [Revoke]
 ```
 
 `expiresAt` is unix seconds, not ISO. Expired shares still appear in the list —
 `getShare` checks the expiry in code because TTL deletion can lag up to 48 hours
-(`functions/shared/db.ts:216`), and the list query does not filter at all. Render
+(`functions/shared/db.ts:223`), and the list query does not filter at all. Render
 them greyed rather than hiding them, so the delay is visible instead of confusing.
 
 ## Revoking
@@ -59,20 +60,18 @@ it is worth knowing that the match is a prefix match rather than a lookup.
 ## Labels
 
 `Share.label` is accepted by `createShare`, stored, and returned by the list — it
-is only ever `undefined` because the client never sends one. The create flow is
-currently a `window.confirm` for RAW plus a hardcoded 30 days
-(`web/src/views/Admin.tsx:133`).
+is only ever `undefined` because the client never sends one. The create flow is a
+single button with hardcoded 30 days and `allowDownload: true`
+(`web/src/views/Admin.tsx:134`).
 
 Since a list of unlabelled shares is nearly useless — "which of these three did I
 send to the gallery?" — labels are effectively part of this feature, not a separate
-one. That means replacing the confirm with a small form: label, expiry in days,
-allow download, allow RAW. The API clamps expiry to 1–365 days already
-(`functions/api/index.ts:267`), so the input needs no validation of its own beyond
-being a number.
+one. Three fields now, not four: label, expiry in days, allow download. The API
+clamps expiry to 1–365 days already (`functions/api/index.ts:270`), so the input
+needs no validation of its own beyond being a number.
 
-This is the one place where a real form is justified rather than a `prompt` chain —
-four fields collected in sequence through four modal dialogs is worse than the
-thing it avoids building.
+At three fields a `prompt` chain is three modal dialogs to create one link, which is
+worse than one small inline form. Build the form.
 
 ## Client methods
 
@@ -85,7 +84,7 @@ revokeShare: (folderId: string, id: string) =>
 ```
 
 with `ShareSummary` mirroring the stripped response shape — `id`, `folderId`,
-`createdAt`, `expiresAt`, `allowDownload`, `allowRaw`, `label?`.
+`createdAt`, `expiresAt`, `allowDownload`, `label?`.
 
 ## Interaction with folder deletion
 

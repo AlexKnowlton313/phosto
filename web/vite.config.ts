@@ -4,6 +4,13 @@ import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
 const FIXTURE = resolve(__dirname, 'public/__preview/share.json');
+const CONFIG = resolve(__dirname, 'public/config.json');
+
+/** Only present locally — CDK writes the real one into the bucket at deploy. */
+const deployedDomain = (): string | undefined =>
+  existsSync(CONFIG)
+    ? (JSON.parse(readFileSync(CONFIG, 'utf8')) as { domain: string }).domain
+    : undefined;
 
 /**
  * Serves a share payload from a local fixture so the gallery can be worked on
@@ -43,5 +50,19 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // The admin UI calls /api and loads /f/* with relative paths, and the image
+    // cookies are pinned to `Domain=<site>`. Proxying keeps dev same-origin and
+    // rewrites the cookie domain to localhost, which is the only way those
+    // cookies survive the hop. Cognito talks to AWS directly and isn't proxied.
+    proxy: Object.fromEntries(
+      (deployedDomain() ? ['/api', '/f'] : []).map((path) => [
+        path,
+        {
+          target: `https://${deployedDomain()}`,
+          changeOrigin: true,
+          cookieDomainRewrite: '',
+        },
+      ]),
+    ),
   },
 });

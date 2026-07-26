@@ -270,9 +270,17 @@ export class PhostoStack extends cdk.Stack {
 
     // The share page is rendered by the same Lambda so its HTML can carry
     // per-folder OG tags. Public by design — it is the share link itself.
+    //
+    // HEAD is listed explicitly: an HTTP API does *not* answer HEAD from a GET
+    // route, it 404s with its own `{"message":"Not Found"}` before the
+    // integration runs. Link unfurlers probe the OG image with HEAD first, so a
+    // GET-only route unfurls the title and silently drops the picture.
     httpApi.addRoutes({
       path: '/s/{proxy+}',
-      methods: [cdk.aws_apigatewayv2.HttpMethod.GET],
+      methods: [
+        cdk.aws_apigatewayv2.HttpMethod.GET,
+        cdk.aws_apigatewayv2.HttpMethod.HEAD,
+      ],
       integration: apiIntegration,
     });
 

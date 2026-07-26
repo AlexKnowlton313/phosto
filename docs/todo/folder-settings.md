@@ -36,6 +36,8 @@ safe either way.
 
 ## Delete folder
 
+note: we should have a default folder where orphans go. This folder should not be allowed to be deleted. WE NEVER WANT TO LOSE PHOTOS, THIS IS THE PHOTO STORAGE FOR MY IMAGES AS WELL AS A SITE TO SHARE THEM.
+
 The API refuses to delete a folder that still holds photos, with a 409 naming the
 count (`functions/api/index.ts:433`). So the UI is: offer `Delete roll` only when
 `photos.length === 0`, confirm with `window.confirm`, and surface the API message
@@ -44,6 +46,9 @@ and the click.
 
 `btn-danger` / safelight red, per the design rule that reserves `--safelight` for
 destructive actions.
+
+In the UI, if we try to delete a folder with photos, prompt the user with a button
+that bulk moves all photos to the orphaned folder, then allow the user to delete.
 
 ### Orphaned shares
 
