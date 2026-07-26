@@ -345,7 +345,10 @@ async function downloadPayload(photo: Photo, wantRaw: boolean) {
     : originalKey(photo.folderId, photo.photoId, ext);
 
   return {
-    url: await signObjectUrl(key, DOWNLOAD_TTL, `${photo.basename}.${ext}`),
+    url: await signObjectUrl(key, DOWNLOAD_TTL),
+    // The signed URL is a bare object URL, so the name the browser saves under
+    // comes from here rather than from a Content-Disposition override.
+    filename: `${photo.basename}.${ext}`,
     expiresIn: DOWNLOAD_TTL,
   };
 }

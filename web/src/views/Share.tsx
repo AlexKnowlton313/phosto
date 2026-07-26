@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { shareApi, type ShareView } from '../api';
+import { saveAs, shareApi, type ShareView } from '../api';
 import { ContactSheet, EdgeHeader } from '../components/ContactSheet';
 import { Lightbox } from '../components/Lightbox';
 
@@ -34,8 +34,7 @@ export function Share({ token }: { token: string }) {
   }
 
   const download = async (photoId: string, kind: 'original' | 'raw') => {
-    const { url } = await shareApi.download(token, photoId, kind);
-    window.location.href = url;
+    saveAs(await shareApi.download(token, photoId, kind));
   };
 
   const rawFrames = data.photos.filter((p) => p.hasRaw).length;

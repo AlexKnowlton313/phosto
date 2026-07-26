@@ -124,7 +124,7 @@ export const adminApi = (token: string) => ({
     ),
 
   download: (folderId: string, photoId: string, kind: 'original' | 'raw') =>
-    request<{ url: string }>(
+    request<DownloadTarget>(
       `/api/folders/${folderId}/photos/${photoId}/${kind}`,
       { method: 'POST' },
       token,
@@ -147,10 +147,34 @@ export const shareApi = {
   open: (shareToken: string) => request<ShareView>(`/api/share/${shareToken}`),
 
   download: (shareToken: string, photoId: string, kind: 'original' | 'raw') =>
-    request<{ url: string }>(`/api/share/${shareToken}/photos/${photoId}/${kind}`, {
+    request<DownloadTarget>(`/api/share/${shareToken}/photos/${photoId}/${kind}`, {
       method: 'POST',
     }),
 };
+
+export interface DownloadTarget {
+  url: string;
+  filename: string;
+  expiresIn: number;
+}
+
+/**
+ * Saves a signed object URL under its original filename.
+ *
+ * The URL is signed bare — no `response-content-disposition`, because that
+ * parameter is part of the signed resource and CloudFront strips it before S3
+ * anyway (see `signObjectUrl`). `download` supplies the name instead, which the
+ * browser honors only because the objects are served from this same origin.
+ */
+export function saveAs({ url, filename }: DownloadTarget) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
 
 /** Uploads one file to its presigned URL, reporting 0..1 progress. */
 export function uploadFile(

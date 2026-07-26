@@ -1,7 +1,13 @@
-# phosto
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## phosto
 
 Self-hosted photo gallery on AWS. Folders, unlisted share links, RAW files hidden
-behind a toggle. Live at `photos.alex-knowlton.com`, single admin, ~$0.20/month.
+behind a toggle. Live at `photos.alex-knowlton.com`, single admin, ~$0.29/month
+all-in — of which ~$0.20 is storage once RAW ages into Glacier IR
+(`docs/cost-estimate.md`).
 
 ## Layout
 
@@ -16,11 +22,26 @@ docs/       architecture.md, cost-estimate.md
 ## Commands
 
 ```bash
-npm run typecheck                  # all three workspaces
+npm run typecheck                  # tsc over infra, functions, web — scripts/ is plain .mjs
 npm run build:web
+npm run dev --workspace web        # vite on :5173
+npm run build:layer                # sharp + libheif-js for linux-arm64
 npm run diff                       # cdk diff
 npm run deploy                     # layer + web build + cdk deploy
 ```
+
+**There is no test suite** — no runner, no test files, no `npm test`. Don't go
+looking for one, and don't imply coverage that doesn't exist. The verification loop
+is `npm run typecheck`, then `npm run diff` to read the CloudFormation change, then
+the access-control canary described below.
+
+`functions/layers/*/nodejs/` is gitignored and CDK reads it with `Code.fromAsset`,
+so a bare `npx cdk synth`/`deploy` on a fresh clone fails until `npm run
+build:layer` has run. `npm run deploy` does it first. The sharp version is pinned
+twice — `SHARP_VERSION` in `functions/build-layer.sh` (the deployed binary) and
+`functions/package.json` devDependencies (types only, since the layer supplies the
+runtime copy). If they drift, the types describe a different sharp than the one in
+Lambda.
 
 Deploying needs `infra/config.json` (gitignored — copy `config.example.json`) and
 `infra/keys/cloudfront-public.pem` from `npm run bootstrap:keys`.
@@ -50,6 +71,32 @@ They are separate for two independent reasons, and collapsing them breaks both:
 Verify access control with a canary rather than by reading the config: upload an
 object with known bytes under `f/` and confirm an unsigned fetch does not return
 them.
+
+## Adding an API route
+
+`functions/api/index.ts` is a single Lambda behind `/api/{proxy+}`, dispatched by a
+hand-rolled table of `{ method, pattern, admin, handle }` near the bottom of the
+file. The router is the only place authentication happens: `admin: true` makes it
+run `requireAdmin` (verifies a Cognito access token) before the handler, so a new
+protected route needs that flag and nothing else. Handlers signal failure by
+throwing `HttpError(status, message)`; anything else becomes a 500 with the detail
+logged rather than returned.
+
+`presentPhoto` shapes both the admin and the share response. It takes
+`allowDownload` / `allowRaw` and omits what the caller may not have, so original
+and RAW keys never appear in a payload that isn't permitted to fetch them — the API
+counterpart to the prefix split above.
+
+Two credential types come out of this Lambda and they are not interchangeable:
+signed **cookies** for derivatives (admin gets `f/*`, a share gets
+`f/<folderId>/*`) and single-object signed **URLs** for originals and RAWs. Both
+are minted in `functions/shared/signing.ts` from the SSM-held private key, cached
+per container but never cached as a rejected promise.
+
+`functions/` is `module: NodeNext`, so relative imports must carry a `.js`
+extension even though the sources are `.ts` — `import * as db from
+'../shared/db.js'`. `web/` uses `moduleResolution: bundler` and does the opposite,
+so don't copy an import style between the two.
 
 ## Landmines
 
@@ -81,18 +128,44 @@ the index.
   `display: grid` + `place-items: center`, which auto-sizes the track to the
   image, so `max-height: 100%` constrained nothing and desktop showed a cropped
   crop. It reproduced *only* on desktop — narrow viewports are width-bound.
+- **Signed object URLs must have no query string.** A canned policy's `Resource`
+  is the whole URL, so any extra parameter has to survive round-tripping into
+  CloudFront byte-for-byte — `response-content-disposition` did not, because
+  `URLSearchParams` encodes the space in `attachment; filename=` as `+`. The
+  failure is a CloudFront `<Code>AccessDenied</Code><Message>Access
+  denied</Message>`, which looks like a key-group problem but is a signature
+  mismatch. (S3's own denial says "Access Denied" and carries a `RequestId`.) The
+  parameter was inert regardless: the signed behaviors use `CACHING_OPTIMIZED`,
+  query strings `none`, so CloudFront drops it before S3. Download filenames come
+  from `saveAs()` and `<a download>` in `web/src/api.ts` — same-origin, so the
+  attribute is honored.
 - **`vite.config.ts` needs `define: { global: 'globalThis' }`** for
   `amazon-cognito-identity-js`, which otherwise builds clean and throws at runtime.
 
 ## Data model
 
-DynamoDB single table. Photo sort keys use `uploadedAt`, **not** `takenAt` — the
-derive Lambda corrects `takenAt` from EXIF, and a sort key cannot be updated in
-place. Callers sort by `takenAt` after reading.
+One DynamoDB table, reached only through `functions/shared/db.ts`:
+
+| Item | pk | sk | gsi1pk / gsi1sk |
+|---|---|---|---|
+| Folder | `FOLDER#<id>` | `META` | `ROOT` / `<createdAt>#<id>` |
+| Photo | `FOLDER#<id>` | `PHOTO#<uploadedAt>#<photoId>` | — |
+| Share | `SHARE#<sha256>` | `META` | `FOLDER#<id>` / `SHARE#<createdAt>` |
+
+`gsi1` is overloaded: `gsi1pk = ROOT` lists every folder, `gsi1pk = FOLDER#<id>`
+lists that folder's shares.
+
+Photo sort keys use `uploadedAt`, **not** `takenAt` — the derive Lambda corrects
+`takenAt` from EXIF, and a sort key cannot be updated in place. Callers sort by
+`takenAt` after reading. `photoId` is absent from the sort key too, so `findPhoto`
+is a filtered query across the folder partition rather than a point read; that is
+the first thing that stops scaling.
 
 A JPEG and a RAW sharing a basename (`XT300024.JPG` + `.RAF`) are **one** photo
 with `hasRaw: true`. That pairing is why uploads are requested as a batch. The
-JPEG wins as the preview source; the RAF path only runs for RAW-only photos.
+JPEG wins as the preview source; the RAF path only runs for RAW-only photos. The
+batch is capped at 200 files in `createUploads` and the admin UI does not chunk, so
+dropping more than that on it fails the whole selection with a 400.
 
 Share tokens are stored SHA-256 hashed. `getShare` checks expiry in code because
 DynamoDB TTL deletion can lag up to 48 hours.
@@ -119,13 +192,28 @@ No deployed stack needed. The fixture generator writes real derivatives from a
 folder of photos, and `vite.config.ts` serves them for any `/api/share/*` request:
 
 ```bash
-npm run preview:fixture -- --src /Volumes/Untitled/DCIM/100_FUJI --name "Roll"
+npm run preview:fixture -- --src /Volumes/Untitled/DCIM/100_FUJI --name "Roll" [--limit 24]
 ```
 
 Then `npm run dev --workspace web` and open `/s/anything`.
 
-Generate fixtures at production derivative sizes (2400px). A smaller fixture is
-what hid the lightbox bug.
+`make-preview.mjs` writes at production derivative sizes (400 / 2400) on purpose —
+a smaller fixture is what hid the lightbox bug. Don't shrink it to speed the script
+up.
+
+`/s/<token>` is the only client-side route. `App.tsx` matches it before touching
+Cognito, so a share viewer never loads the auth path; everything else is the admin
+UI behind sign-in.
+
+The web bundle holds no account-specific values: CDK writes `config.json` into the
+bucket at deploy time via `Source.jsonData`, and `loadConfig()` fetches it at
+startup. Moving pool IDs or the domain into `VITE_` env vars would put them back in
+the bundle and make every redeploy a rebuild.
+
+Port 5173 is not just a vite default here — `http://localhost:5173` is allow-listed
+in both the bucket's CORS rule and the HTTP API's `corsPreflight` in
+`phosto-stack.ts`, which is what lets `vite dev` talk to the deployed API. Changing
+the dev port means changing both.
 
 Design direction is a **contact sheet under a darkroom safelight**: uniform 3:2
 cells, frame numbers, a folder header set like film edge-printing. Amber
@@ -136,11 +224,13 @@ destructive actions only. Keep accents doing exactly one job.
 
 ```bash
 npm run upload -- --folder "Name" --src <dir> [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+                  [--dry-run] [--reset]
 ```
 
-Talks to S3/DynamoDB directly rather than through the API. Resumable via
-`scripts/.upload-state.json`, keyed per folder. `--dry-run` first — it reports the
-pairing and byte totals without uploading.
+Talks to S3/DynamoDB directly rather than through the API, resolving stack outputs
+from CloudFormation. Resumable via `scripts/.upload-state.json`, keyed per folder;
+`--reset` discards that state and starts the folder over. `--dry-run` first — it
+reports the pairing and byte totals without uploading.
 
 `--since`/`--until` filter on EXIF `DateTimeOriginal`, which carries no timezone
 and is deliberately **not** converted: the date means the date where the camera

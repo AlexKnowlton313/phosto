@@ -68,25 +68,29 @@ export async function signFolderCookies(
   }));
 }
 
-/** A short-lived URL for one specific object — used for originals and RAWs. */
+/**
+ * A short-lived URL for one specific object — used for originals and RAWs.
+ *
+ * Deliberately signs a bare object URL with no query string. An earlier version
+ * appended `response-content-disposition` to name the downloaded file, which
+ * failed twice over: the canned policy's Resource then includes that parameter,
+ * so CloudFront has to match it byte-for-byte against the viewer request and the
+ * `+`/`%20` encoding of the space in `attachment; filename=` is enough to fail
+ * the signature check (a CloudFront `AccessDenied`, which reads like a key or
+ * key-group problem). And it was useless even when it validated, because the
+ * signed behaviors use CACHING_OPTIMIZED, whose query-string behavior is `none`
+ * — CloudFront strips the parameter before S3 ever sees it. The download name is
+ * set by the client instead, via `<a download>`; the app and the objects share an
+ * origin, so the attribute is honored.
+ */
 export async function signObjectUrl(
   key: string,
   ttlSeconds: number,
-  downloadFilename?: string,
 ): Promise<string> {
   const privateKey = await loadPrivateKey();
-  const url = new URL(`https://${DOMAIN}/${key}`);
-
-  if (downloadFilename) {
-    // CloudFront forwards this to S3, which echoes it back as the download name.
-    url.searchParams.set(
-      'response-content-disposition',
-      `attachment; filename="${downloadFilename.replace(/"/g, '')}"`,
-    );
-  }
 
   return getSignedUrl({
-    url: url.toString(),
+    url: `https://${DOMAIN}/${key}`,
     keyPairId: KEY_PAIR_ID,
     privateKey,
     dateLessThan: new Date(Date.now() + ttlSeconds * 1000).toISOString(),

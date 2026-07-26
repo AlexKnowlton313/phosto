@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   adminApi,
+  saveAs,
   uploadFile,
   type AppConfig,
   type FolderView,
@@ -145,8 +146,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   const download = async (photo: PhotoView, kind: 'original' | 'raw') => {
     if (!current) return;
-    const { url } = await api.download(current.folderId, photo.photoId, kind);
-    window.location.href = url;
+    saveAs(await api.download(current.folderId, photo.photoId, kind));
   };
 
   const removePhoto = async (photo: PhotoView) => {
