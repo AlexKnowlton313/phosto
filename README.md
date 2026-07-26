@@ -13,7 +13,7 @@ only interesting to about three people.
 ## How it works
 
 Browser uploads straight to S3 via presigned URLs. An S3 event fires a Lambda that
-generates `thumb` / `medium` / `large` WebP derivatives — including from Fujifilm
+generates `thumb` / `large` WebP derivatives — including from Fujifilm
 RAF files, by extracting the embedded JPEG with two range requests instead of
 downloading 30 MB. The gallery only ever loads derivatives; originals and RAWs need
 an explicit click.

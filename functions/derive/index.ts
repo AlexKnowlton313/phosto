@@ -35,7 +35,7 @@ async function loadDecodableBytes(
 
   if (isRaf(ext)) {
     const preview = await extractRafPreview(s3, BUCKET, key);
-    return preview ? { buffer: preview.jpeg, sourceExt: 'jpg' } : null;
+    return preview ? { buffer: preview, sourceExt: 'jpg' } : null;
   }
 
   // CR2/NEF/ARW/DNG also carry previews, but each has its own TIFF-IFD layout.

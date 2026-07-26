@@ -1,0 +1,96 @@
+# Share management — list and revoke
+
+See which links are live on a roll and kill one.
+
+## What exists
+
+The full server side, with no client at all:
+
+- `GET /api/folders/<id>/shares` (`functions/api/index.ts:472`) returns each share
+  with `tokenHash` stripped and replaced by `id: tokenHash.slice(0, 12)`
+- `DELETE /api/folders/<id>/shares/<id>` (`functions/api/index.ts:494`) resolves
+  that short id by prefix match and deletes the share
+- `db.listSharesForFolder` queries `gsi1` on `FOLDER#<id>` / `SHARE#` prefix
+
+Today the only kill switch for a leaked link is rotating the CloudFront signing
+key, which invalidates *every* share at once. That is the reason these routes
+should stay even while unused.
+
+## The link cannot be shown again
+
+`createShare` returns the URL exactly once and stores only the SHA-256 of the token
+(`functions/api/index.ts:271`). A leaked table yields no working links, which is
+the point — and it means the list can never redisplay a share URL. It shows what a
+link *is* and *does*, not how to open it.
+
+Say so in the UI. Someone will otherwise assume the missing URL is a bug and go
+looking for it in DynamoDB.
+
+## What the list shows
+
+The response already carries everything: `folderId`, `createdAt`, `expiresAt`,
+`allowDownload`, `allowRaw`, `label`, and the short `id`.
+
+Render as a small table under the folder toolbar, monospace, film-edge styling to
+match the header:
+
+```
+LABEL          CREATED       EXPIRES        DOWNLOAD  RAW    
+for mum        18 Jul 2026   in 12 days     yes       no      [Revoke]
+—              02 Jul 2026   expired         no       no      [Revoke]
+```
+
+`expiresAt` is unix seconds, not ISO. Expired shares still appear in the list —
+`getShare` checks the expiry in code because TTL deletion can lag up to 48 hours
+(`functions/shared/db.ts:216`), and the list query does not filter at all. Render
+them greyed rather than hiding them, so the delay is visible instead of confusing.
+
+## Revoking
+
+`DELETE`, `btn-danger`, `window.confirm` — safelight red is for destructive actions
+and this is one. On success, refetch the list.
+
+The route pattern requires exactly 12 lowercase hex characters
+(`/^\/api\/folders\/([\w-]+)\/shares\/([0-9a-f]{12})$/`) and resolves by
+`startsWith` against the full hashes in the folder. 48 bits of prefix against a
+handful of shares per folder is not a collision risk worth engineering around, but
+it is worth knowing that the match is a prefix match rather than a lookup.
+
+## Labels
+
+`Share.label` is accepted by `createShare`, stored, and returned by the list — it
+is only ever `undefined` because the client never sends one. The create flow is
+currently a `window.confirm` for RAW plus a hardcoded 30 days
+(`web/src/views/Admin.tsx:133`).
+
+Since a list of unlabelled shares is nearly useless — "which of these three did I
+send to the gallery?" — labels are effectively part of this feature, not a separate
+one. That means replacing the confirm with a small form: label, expiry in days,
+allow download, allow RAW. The API clamps expiry to 1–365 days already
+(`functions/api/index.ts:267`), so the input needs no validation of its own beyond
+being a number.
+
+This is the one place where a real form is justified rather than a `prompt` chain —
+four fields collected in sequence through four modal dialogs is worse than the
+thing it avoids building.
+
+## Client methods
+
+```ts
+listShares: (folderId: string) =>
+  request<{ shares: ShareSummary[] }>(`/api/folders/${folderId}/shares`, {}, token),
+
+revokeShare: (folderId: string, id: string) =>
+  request<void>(`/api/folders/${folderId}/shares/${id}`, { method: 'DELETE' }, token),
+```
+
+with `ShareSummary` mirroring the stripped response shape — `id`, `folderId`,
+`createdAt`, `expiresAt`, `allowDownload`, `allowRaw`, `label?`.
+
+## Interaction with folder deletion
+
+Deleting a folder currently leaves its shares behind; see the orphaned-shares
+section of [folder-settings.md](folder-settings.md). If that cascade is
+implemented, this list never shows a share whose folder is gone. If it is not, this
+list is the only place such rows would ever be visible — which is an argument for
+building the cascade first.

@@ -33,10 +33,7 @@ function loadPrivateKey(): Promise<string> {
   return privateKeyPromise;
 }
 
-export interface SignedCookie {
-  name: string;
-  value: string;
-}
+type SignedCookies = ReturnType<typeof getSignedCookies>;
 
 /**
  * Signs a wildcard resource so one set of cookies covers every derivative in a
@@ -47,7 +44,7 @@ export interface SignedCookie {
 export async function signFolderCookies(
   resource: string,
   ttlSeconds: number,
-): Promise<SignedCookie[]> {
+): Promise<SignedCookies> {
   const privateKey = await loadPrivateKey();
   const expires = Math.floor(Date.now() / 1000) + ttlSeconds;
 
@@ -60,12 +57,7 @@ export async function signFolderCookies(
     ],
   });
 
-  const cookies = getSignedCookies({ keyPairId: KEY_PAIR_ID, privateKey, policy });
-
-  return Object.entries(cookies).map(([name, value]) => ({
-    name,
-    value: String(value),
-  }));
+  return getSignedCookies({ keyPairId: KEY_PAIR_ID, privateKey, policy });
 }
 
 /**
@@ -97,9 +89,9 @@ export async function signObjectUrl(
   });
 }
 
-export function cookieHeaders(cookies: SignedCookie[], maxAge: number): string[] {
-  return cookies.map(
-    ({ name, value }) =>
+export function cookieHeaders(cookies: SignedCookies, maxAge: number): string[] {
+  return Object.entries(cookies).map(
+    ([name, value]) =>
       `${name}=${value}; Domain=${DOMAIN}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
   );
 }

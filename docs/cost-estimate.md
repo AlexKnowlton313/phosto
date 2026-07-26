@@ -82,7 +82,7 @@ of derivatives burns through it ~16× faster:
 
 Mitigations built into the design:
 
-- The gallery only ever loads `thumb` / `medium` / `large` derivatives. Originals
+- The gallery only ever loads `thumb` / `large` derivatives. Originals
   require an explicit download click.
 - `raw/*` and `f/*` both sit behind CloudFront trusted key groups, so neither can be
   hotlinked or crawled without a signature.

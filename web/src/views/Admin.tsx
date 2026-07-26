@@ -91,6 +91,13 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       let done = 0;
       let cursor = 0;
 
+      const report = () =>
+        setUpload({
+          total: uploads.length,
+          done,
+          fraction: progress.reduce((a, b) => a + b, 0) / uploads.length,
+        });
+
       const worker = async () => {
         while (cursor < uploads.length) {
           const slot = cursor++;
@@ -100,20 +107,12 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
           await uploadFile(item.url, file, (fraction) => {
             progress[slot] = fraction;
-            setUpload({
-              total: uploads.length,
-              done,
-              fraction: progress.reduce((a, b) => a + b, 0) / uploads.length,
-            });
+            report();
           });
 
           progress[slot] = 1;
           done += 1;
-          setUpload({
-            total: uploads.length,
-            done,
-            fraction: progress.reduce((a, b) => a + b, 0) / uploads.length,
-          });
+          report();
         }
       };
 
@@ -174,7 +173,17 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
             New roll
           </button>
           <div className="spacer" />
-          <button className="btn" onClick={() => { signOut(config); location.reload(); }}>
+          <button
+            className="btn"
+            onClick={async () => {
+              // Clear the CloudFront cookies too, or images stay reachable for the
+              // rest of the session TTL after signing out. A failure here must not
+              // block the local sign-out.
+              await api.endSession().catch(() => {});
+              signOut(config);
+              location.reload();
+            }}
+          >
             Sign out
           </button>
         </div>

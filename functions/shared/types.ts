@@ -1,5 +1,3 @@
-export type PhotoKind = 'image' | 'raw-only';
-
 export interface Folder {
   folderId: string;
   name: string;
@@ -16,7 +14,6 @@ export interface Photo {
   photoId: string;
   /** Original filename stem, e.g. "XT300024". This is what pairs JPEG with RAW. */
   basename: string;
-  kind: PhotoKind;
   takenAt: string;
   uploadedAt: string;
   width?: number;
@@ -28,7 +25,7 @@ export interface Photo {
   rawExt?: string;
   rawBytes?: number;
   hasRaw: boolean;
-  /** Set once the derive Lambda has written thumb/medium/large. */
+  /** Set once the derive Lambda has written thumb/large. */
   derivedAt?: string;
   /** Populated from EXIF when available — shown in the lightbox. */
   camera?: string;
@@ -51,9 +48,13 @@ export interface Share {
   label?: string;
 }
 
+/**
+ * Two sizes, not three. `thumb` fills the contact sheet and `large` is what the
+ * lightbox renders; a middle size was written for every photo and never displayed
+ * by anything, so it was a third of the derive cost and storage for nothing.
+ */
 export const DERIVATIVE_SIZES = {
   thumb: 400,
-  medium: 1200,
   large: 2400,
 } as const;
 

@@ -112,7 +112,6 @@ for (const file of images) {
     focalLength: focal ? `${Math.round(focal)}mm` : undefined,
     urls: {
       thumb: `/__preview/${stem}-thumb.webp`,
-      medium: `/__preview/${stem}-large.webp`,
       large: `/__preview/${stem}-large.webp`,
     },
   });

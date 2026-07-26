@@ -5,7 +5,6 @@ import { GetObjectCommand, type S3Client } from '@aws-sdk/client-s3';
  * where it is:
  *
  *   bytes 0..15    "FUJIFILMCCD-RAW "
- *   bytes 28..59   camera model, NUL-padded
  *   bytes 84..87   uint32 BE — offset of the embedded JPEG
  *   bytes 88..91   uint32 BE — length of the embedded JPEG
  *
@@ -20,11 +19,6 @@ const MAGIC = 'FUJIFILMCCD-RAW';
 
 /** Guards against a corrupt header pointing at an absurd range request. */
 const MAX_PREVIEW_BYTES = 64 * 1024 * 1024;
-
-export interface RafPreview {
-  jpeg: Buffer;
-  camera?: string;
-}
 
 async function readRange(
   s3: S3Client,
@@ -43,7 +37,7 @@ export async function extractRafPreview(
   s3: S3Client,
   bucket: string,
   key: string,
-): Promise<RafPreview | null> {
+): Promise<Buffer | null> {
   const header = await readRange(s3, bucket, key, 0, HEADER_BYTES - 1);
 
   if (header.length < HEADER_BYTES) return null;
@@ -60,9 +54,7 @@ export async function extractRafPreview(
   // half-grey derivative that looks like a real photo.
   if (jpeg.readUInt16BE(0) !== 0xffd8) return null;
 
-  const camera = header.subarray(28, 60).toString('latin1').replace(/\0+$/, '').trim();
-
-  return { jpeg, camera: camera || undefined };
+  return jpeg;
 }
 
 export const isRaf = (ext: string) => ext.toLowerCase() === 'raf';

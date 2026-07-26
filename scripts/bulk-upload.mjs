@@ -93,17 +93,6 @@ const config = JSON.parse(readFileSync(join(repoRoot, 'infra/config.json'), 'utf
 const extOf = (name) => extname(name).slice(1).toLowerCase();
 
 /**
- * Groups a directory into photos.
- *
- * A JPEG and a RAW sharing a basename (XT300024.JPG + XT300024.RAF) are one photo
- * with two files, which is what makes the RAW toggle meaningful rather than
- * showing every frame twice.
- *
- * macOS writes AppleDouble sidecars named `._NAME` onto FAT-formatted cards. They
- * are 4KB of metadata with a real image extension, so they must be filtered out or
- * they upload as corrupt photos.
- */
-/**
  * The moment the shutter fired, as an ISO string.
  *
  * EXIF DateTimeOriginal carries no timezone — it is already local to wherever the
@@ -124,6 +113,17 @@ async function capturedAt(path) {
   return statSync(path).mtime.toISOString();
 }
 
+/**
+ * Groups a directory into photos.
+ *
+ * A JPEG and a RAW sharing a basename (XT300024.JPG + XT300024.RAF) are one photo
+ * with two files, which is what makes the RAW toggle meaningful rather than
+ * showing every frame twice.
+ *
+ * macOS writes AppleDouble sidecars named `._NAME` onto FAT-formatted cards. They
+ * are 4KB of metadata with a real image extension, so they must be filtered out or
+ * they upload as corrupt photos.
+ */
 async function scan(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   const groups = new Map();
@@ -322,7 +322,6 @@ async function main() {
               folderId: state.folderId,
               photoId,
               basename: group.stem,
-              kind: group.image ? 'image' : 'raw-only',
               takenAt: group.takenAt,
               uploadedAt: now,
               hasRaw: Boolean(group.raw),

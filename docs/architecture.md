@@ -41,8 +41,7 @@ flowchart TB
 ```
 /                                    static site (index.html, assets/…)
 f/<folderId>/<photoId>/thumb.webp    ~400px   — grid
-f/<folderId>/<photoId>/medium.webp   ~1200px  — lightbox
-f/<folderId>/<photoId>/large.webp    ~2400px  — zoom
+f/<folderId>/<photoId>/large.webp    ~2400px  — lightbox
 orig/<folderId>/<photoId>.jpg        as uploaded — download only
 raw/<folderId>/<photoId>.RAF         as uploaded — lifecycle → Glacier IR at 30d
 ```

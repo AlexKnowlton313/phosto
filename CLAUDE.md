@@ -54,7 +54,7 @@ Deploying needs `infra/config.json` (gitignored — copy `config.example.json`) 
 This is the most important thing to understand before changing anything.
 
 ```
-f/<folderId>/<photoId>/{thumb,medium,large}.webp   derivatives — signed COOKIES
+f/<folderId>/<photoId>/{thumb,large}.webp          derivatives — signed COOKIES
 orig/<folderId>/<photoId>.<ext>                    originals   — signed URL, per object
 raw/<folderId>/<photoId>.<ext>                     RAW         — signed URL, per object
 ```

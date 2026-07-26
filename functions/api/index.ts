@@ -188,7 +188,6 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
       folderId,
       photoId,
       basename: base,
-      kind: image ? 'image' : 'raw-only',
       // Provisional. The derive Lambda overwrites this from EXIF when it can.
       takenAt: takenAt ? new Date(takenAt).toISOString() : now,
       uploadedAt: now,
@@ -235,6 +234,9 @@ async function deletePhotoAndObjects(folderId: string, photoId: string) {
     ...Object.keys(DERIVATIVE_SIZES).map((name) =>
       derivedKey(folderId, photoId, name as keyof typeof DERIVATIVE_SIZES),
     ),
+    // Photos derived before the middle size was dropped still have one in S3.
+    // Listed explicitly so deleting them does not leave a billed orphan behind.
+    `${PREFIX_DERIVED}${folderId}/${photoId}/medium.webp`,
     ...(photo.originalExt ? [originalKey(folderId, photoId, photo.originalExt)] : []),
     ...(photo.rawExt ? [rawKey(folderId, photoId, photo.rawExt)] : []),
   ];

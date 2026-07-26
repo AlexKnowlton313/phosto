@@ -28,6 +28,22 @@ const sharePk = (tokenHash: string) => `SHARE#${tokenHash}`;
 const photoSk = (uploadedAt: string, photoId: string) =>
   `PHOTO#${uploadedAt}#${photoId}`;
 
+/**
+ * Turns a patch object into the three fields an UpdateCommand needs, skipping
+ * undefined values so a partial patch never blanks a field it did not mention.
+ */
+function setExpression(patch: Record<string, unknown>) {
+  const fields = Object.entries(patch).filter(([, v]) => v !== undefined);
+  return {
+    UpdateExpression: `SET ${fields.map(([k]) => `#${k} = :${k}`).join(', ')}`,
+    ExpressionAttributeNames: Object.fromEntries(fields.map(([k]) => [`#${k}`, k])),
+    ExpressionAttributeValues: Object.fromEntries(fields.map(([k, v]) => [`:${k}`, v])),
+  };
+}
+
+const hasPatch = (patch: object) =>
+  Object.values(patch).some((v) => v !== undefined);
+
 // --------------------------------------------------------------------- folders
 
 export async function putFolder(folder: Folder): Promise<void> {
@@ -69,26 +85,13 @@ export async function updateFolder(
   folderId: string,
   patch: Partial<Pick<Folder, 'name' | 'coverPhotoId' | 'rawVisibleDefault'>>,
 ): Promise<void> {
-  const fields = Object.entries(patch).filter(([, v]) => v !== undefined);
-  if (fields.length === 0) return;
-
-  const names: Record<string, string> = { '#updatedAt': 'updatedAt' };
-  const values: Record<string, unknown> = { ':updatedAt': new Date().toISOString() };
-  const sets = ['#updatedAt = :updatedAt'];
-
-  for (const [key, value] of fields) {
-    names[`#${key}`] = key;
-    values[`:${key}`] = value;
-    sets.push(`#${key} = :${key}`);
-  }
+  if (!hasPatch(patch)) return;
 
   await ddb.send(
     new UpdateCommand({
       TableName: TABLE,
       Key: { pk: folderPk(folderId), sk: 'META' },
-      UpdateExpression: `SET ${sets.join(', ')}`,
-      ExpressionAttributeNames: names,
-      ExpressionAttributeValues: values,
+      ...setExpression({ ...patch, updatedAt: new Date().toISOString() }),
       ConditionExpression: 'attribute_exists(pk)',
     }),
   );
@@ -173,26 +176,13 @@ export async function updatePhoto(
   photo: Photo,
   patch: Partial<Photo>,
 ): Promise<void> {
-  const fields = Object.entries(patch).filter(([, v]) => v !== undefined);
-  if (fields.length === 0) return;
-
-  const names: Record<string, string> = {};
-  const values: Record<string, unknown> = {};
-  const sets: string[] = [];
-
-  for (const [key, value] of fields) {
-    names[`#${key}`] = key;
-    values[`:${key}`] = value;
-    sets.push(`#${key} = :${key}`);
-  }
+  if (!hasPatch(patch)) return;
 
   await ddb.send(
     new UpdateCommand({
       TableName: TABLE,
       Key: { pk: folderPk(photo.folderId), sk: photoSk(photo.uploadedAt, photo.photoId) },
-      UpdateExpression: `SET ${sets.join(', ')}`,
-      ExpressionAttributeNames: names,
-      ExpressionAttributeValues: values,
+      ...setExpression(patch),
     }),
   );
 }

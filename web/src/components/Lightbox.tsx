@@ -45,7 +45,7 @@ export function Lightbox({
   // Warm the neighbours so arrowing through the roll does not flash empty.
   useEffect(() => {
     for (const neighbour of [photos[index - 1], photos[index + 1]]) {
-      if (neighbour?.ready) new Image().src = neighbour.urls.medium;
+      if (neighbour?.ready) new Image().src = neighbour.urls.large;
     }
   }, [index, photos]);
 

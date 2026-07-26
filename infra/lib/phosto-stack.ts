@@ -58,7 +58,6 @@ export class PhostoStack extends cdk.Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
-      versioned: false,
       // A photo library is not something to lose to `cdk destroy`.
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       cors: [
@@ -228,12 +227,8 @@ export class PhostoStack extends cdk.Stack {
       }),
     );
 
-    apiFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminGetUser'],
-        resources: [userPool.userPoolArn],
-      }),
-    );
+    // No cognito-idp grant on purpose: aws-jwt-verify checks the access token
+    // against the pool's public JWKS offline, so the API never calls Cognito.
 
     bucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,

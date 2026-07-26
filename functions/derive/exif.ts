@@ -53,7 +53,9 @@ export function readExif(exifBuffer: Buffer | undefined): Partial<ExifFields> {
   const fNumber = finiteNumber(photo.FNumber);
   const focal = finiteNumber(photo.FocalLength);
 
-  const fields: Partial<ExifFields> = {
+  // Every field is a value or undefined; the document client is configured with
+  // removeUndefinedValues, so the absent ones never reach the record.
+  return {
     takenAt: taken instanceof Date && !Number.isNaN(taken.getTime())
       ? taken.toISOString()
       : undefined,
@@ -64,11 +66,4 @@ export function readExif(exifBuffer: Buffer | undefined): Partial<ExifFields> {
     shutter: shutterSeconds ? formatShutter(shutterSeconds) : undefined,
     focalLength: focal ? `${Math.round(focal)}mm` : undefined,
   };
-
-  // Drop empty strings so they don't overwrite good values already on the record.
-  for (const key of Object.keys(fields) as (keyof ExifFields)[]) {
-    if (fields[key] === undefined || fields[key] === '') delete fields[key];
-  }
-
-  return fields;
 }

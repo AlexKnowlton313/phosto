@@ -20,7 +20,7 @@ export interface PhotoView {
   aperture?: string;
   shutter?: string;
   focalLength?: string;
-  urls: { thumb: string; medium: string; large: string };
+  urls: { thumb: string; large: string };
 }
 
 export interface FolderView {
@@ -87,6 +87,9 @@ async function request<T>(
 
 export const adminApi = (token: string) => ({
   startSession: () => request<{ ok: true }>('/api/session', { method: 'POST' }, token),
+
+  /** Expires the signed image cookies. Cognito sign-out alone leaves them live. */
+  endSession: () => request<{ ok: true }>('/api/logout', { method: 'POST' }),
 
   listFolders: () => request<{ folders: FolderView[] }>('/api/folders', {}, token),
 
