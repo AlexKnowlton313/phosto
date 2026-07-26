@@ -8,7 +8,12 @@ import {
   type PhotoView,
 } from '../api';
 import { signOut } from '../auth';
-import { ContactSheet, EdgeHeader } from '../components/ContactSheet';
+import {
+  ContactSheet,
+  EdgeHeader,
+  selectable,
+  useSelection,
+} from '../components/ContactSheet';
 import { Lightbox } from '../components/Lightbox';
 
 /** Enough to saturate a connection without starving the UI thread. */
@@ -34,6 +39,11 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const [upload, setUpload] = useState<UploadState>();
   const [shareUrl, setShareUrl] = useState<string>();
   const [error, setError] = useState<string>();
+  const { selected, toggle, clear, retain } = useSelection();
+  // A batch runs for seconds with no feedback of its own, which makes a second
+  // click likely — and two concurrent loops are exactly the burst the 150ms gap
+  // between downloads exists to avoid.
+  const [batching, setBatching] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   // The signed cookies, not the JWT, are what let the browser load images.
@@ -61,6 +71,10 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     if (!folderId) return;
     const { photos } = await api.listPhotos(folderId);
     setPhotos(photos);
+    // Here rather than in removePhoto: any refresh can drop a photo, and a
+    // selection holding a deleted id keeps the sheet in selection mode with
+    // nothing visibly marked and no obvious way out.
+    retain(photos.map((p) => p.photoId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderId, token]);
 
@@ -68,8 +82,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     setPhotos(undefined);
     setShareUrl(undefined);
     setOpenIndex(undefined);
+    clear();
     refresh().catch((err: Error) => setError(err.message));
-  }, [refresh]);
+  }, [refresh, clear]);
 
   // Derivatives land a few seconds after upload, so poll while any are pending.
   useEffect(() => {
@@ -152,6 +167,28 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const download = async (photo: PhotoView, kind: 'original' | 'raw') => {
     if (!current) return;
     saveAs(await api.download(current.folderId, photo.photoId, kind));
+  };
+
+  const downloadSelected = async (kind: 'original' | 'raw') => {
+    if (!current || !photos) return;
+    setError(undefined);
+    setBatching(true);
+
+    try {
+      for (const photo of selectable(photos, selected, kind)) {
+        // Signed one at a time, immediately before its download: DOWNLOAD_TTL is
+        // five minutes and a long batch would outlive URLs minted up front.
+        saveAs(await api.download(current.folderId, photo.photoId, kind));
+        // Browsers silently drop a burst of programmatic downloads.
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    } catch (err) {
+      // Stop on the first failure rather than marching through the rest: these
+      // fail as a group — an expired session refuses frame 2 through 40 too.
+      setError(`Download stopped: ${(err as Error).message}`);
+    } finally {
+      setBatching(false);
+    }
   };
 
   const setCover = async (photo: PhotoView) => {
@@ -273,6 +310,33 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           onChange={(e) => handleFiles(e.target.files)}
         />
 
+        {selected.size > 0 && (
+          <>
+            <span className="note">{selected.size} selected</span>
+            {selectable(photos ?? [], selected, 'original').length > 0 && (
+              <button
+                className="btn"
+                disabled={batching}
+                onClick={() => downloadSelected('original')}
+              >
+                Download JPEGs
+              </button>
+            )}
+            {selectable(photos ?? [], selected, 'raw').length > 0 && (
+              <button
+                className="btn btn-negatives"
+                disabled={batching}
+                onClick={() => downloadSelected('raw')}
+              >
+                Download RAWs
+              </button>
+            )}
+            <button className="btn" onClick={clear}>
+              Clear
+            </button>
+          </>
+        )}
+
         <div className="spacer" />
 
         <button className="btn" onClick={share}>
@@ -322,7 +386,12 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           </p>
         </div>
       ) : (
-        <ContactSheet photos={photos} onOpen={setOpenIndex} />
+        <ContactSheet
+          photos={photos}
+          selected={selected}
+          onOpen={setOpenIndex}
+          onToggle={toggle}
+        />
       )}
 
       {openIndex !== undefined && photos && (

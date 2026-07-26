@@ -247,6 +247,71 @@ button {
   opacity: 0.85;
 }
 
+/* ----------------------------------------------------------------- selection */
+
+/* A wrapper only so the checkbox can be its own control — the frame is a button
+   and a button cannot contain one. */
+.cell {
+  position: relative;
+}
+
+/* Grease pencil on the sheet: off-white and inset, leaving amber for negatives
+   and safelight for destructive actions. An overlay rather than an inset
+   box-shadow on .frame — that paints under the element's content, so the img at
+   width/height 100% would hide the ring the moment the thumbnail loaded.
+   A pseudo-element also leaves the outline property free for the focus ring. */
+.frame-selected::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 3px solid var(--ink);
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+
+/* Mirrors .frame-no in the opposite corner rather than sharing it — same
+   grease-pencil corner vocabulary, no collision with the frame number. */
+.frame-check {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: rgba(10, 11, 13, 0.55);
+  color: transparent;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.cell:hover .frame-check,
+.frame-check:focus-visible,
+.frame:focus-visible ~ .frame-check {
+  opacity: 1;
+}
+
+.frame-check[aria-pressed='true'] {
+  opacity: 1;
+  background: var(--ink);
+  color: var(--bg);
+}
+
+/* Touch has no hover, so the way into selection mode has to stay visible — but
+   faint. At full opacity every cell on a phone carries a permanent box, which is
+   most of the sheet on the device most share links are opened on. The
+   aria-pressed rule outranks this, so a selected check still reads solid. */
+@media (hover: none) {
+  .frame-check {
+    opacity: 0.4;
+  }
+}
+
 .frame-pending {
   display: grid;
   place-items: center;
@@ -495,6 +560,16 @@ input:focus {
 .error {
   font-size: 13px;
   color: var(--safelight);
+}
+
+/* Announced, never drawn — the selection count for screen readers. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .empty {

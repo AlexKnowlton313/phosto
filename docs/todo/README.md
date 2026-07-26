@@ -10,13 +10,18 @@ is correct if they are never built and wrong if they are.
 
 | Doc | Server today | Client today |
 |---|---|---|
-| [multi-select-download.md](multi-select-download.md) | complete | none |
 | [hidden-photos.md](hidden-photos.md) | none | none |
 | [move-photos.md](move-photos.md) | none | none |
 | [folder-settings.md](folder-settings.md) | complete | none |
 | [share-management.md](share-management.md) | complete | none |
 
-Cover photos shipped on 2026-07-26 and its doc is gone.
+Cover photos shipped on 2026-07-26 and its doc is gone. Multi-select download
+shipped on 2026-07-26 — phase 1 (sequential downloads) only, and its doc is gone
+with it. Phase 2 was a client-side store-mode ZIP, deliberately not built: *n*
+separate files is only a real complaint at batch sizes nobody has hit. If it ever
+comes up, the two things that doc got right are that a zipping Lambda is the wrong
+answer — it routes the bytes around CloudFront and into a billed Lambda response —
+and that DEFLATE buys nothing on already-compressed JPEG and RAF.
 
 Three of the five need no new API routes. `move-photos` and `hidden-photos` are the
 two that need real backend work, and both move S3 objects between key prefixes —
