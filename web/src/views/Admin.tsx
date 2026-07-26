@@ -51,6 +51,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   // click likely — and two concurrent loops are exactly the burst the 150ms gap
   // between downloads exists to avoid.
   const [batching, setBatching] = useState(false);
+  // Deliberately not persisted, and reset on every folder change below: hidden
+  // defaults to out of sight each time a roll is opened, which is the feature.
+  const [showHidden, setShowHidden] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   // The signed cookies, not the JWT, are what let the browser load images.
@@ -89,6 +92,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     setPhotos(undefined);
     setShareUrl(undefined);
     setOpenIndex(undefined);
+    setShowHidden(false);
     clear();
     refresh().catch((err: Error) => setError(err.message));
   }, [refresh, clear]);
@@ -321,6 +325,32 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     }
   };
 
+  /**
+   * One request per frame rather than a batch route: each is a couple of small
+   * S3 copies, and separate requests mean no Lambda timeout to size a cap
+   * against. Serial so a long selection does not open forty at once.
+   */
+  const setHidden = async (ids: string[], hidden: boolean) => {
+    if (!current) return;
+    setError(undefined);
+    setBatching(true);
+
+    try {
+      for (const photoId of ids) {
+        await api.setPhotoHidden(current.folderId, photoId, hidden);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      clear();
+      setOpenIndex(undefined);
+      setBatching(false);
+      await refresh();
+      // Hiding the cover frame clears it, so the roll list is now stale.
+      setFolders((await api.listFolders()).folders);
+    }
+  };
+
   const setCover = async (photo: PhotoView) => {
     if (!current) return;
     const folder = await api.updateFolder(current.folderId, {
@@ -419,6 +449,15 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   // ------------------------------------------------------------- folder detail
 
+  const hiddenCount = photos?.filter((p) => p.hidden).length ?? 0;
+  // The sheet numbers whatever it is handed, one-based, so filtering here is also
+  // what keeps the numbering gapless — a jump from 06 to 08 would advertise the
+  // frame that was taken out, which is the opposite of the point.
+  const shown = showHidden ? photos : photos?.filter((p) => !p.hidden);
+  const selectedHidden = (photos ?? []).filter(
+    (p) => selected.has(p.photoId) && p.hidden,
+  ).length;
+
   return (
     <>
       {/* The orphan roll is an ordinary folder in every way but two: it is a
@@ -473,6 +512,15 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
                 Move to…
               </button>
             )}
+            {/* Unhide only when every selected frame is already hidden, so a
+                mixed selection cannot silently republish one of them. */}
+            <button
+              className="btn"
+              disabled={batching}
+              onClick={() => setHidden([...selected], selectedHidden !== selected.size)}
+            >
+              {selectedHidden === selected.size ? 'Unhide' : 'Hide'}
+            </button>
             <button className="btn" onClick={clear}>
               Clear
             </button>
@@ -480,6 +528,21 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         )}
 
         <div className="spacer" />
+
+        {hiddenCount > 0 && (
+          <button
+            className="btn"
+            onClick={() => {
+              // Turning the toggle off shrinks the sheet, so any hidden frame in
+              // the selection would keep it in selection mode with nothing
+              // visibly marked — the same drift `retain` exists to prevent.
+              if (showHidden) retain((photos ?? []).filter((p) => !p.hidden).map((p) => p.photoId));
+              setShowHidden((on) => !on);
+            }}
+          >
+            {showHidden ? `Hide hidden (${hiddenCount})` : `Show hidden (${hiddenCount})`}
+          </button>
+        )}
 
         <button className="btn" disabled={batching} onClick={share}>
           Share roll
@@ -523,35 +586,40 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       {status && <p className="note" style={{ padding: '16px 24px' }}>{status}</p>}
       {error && <p className="error" style={{ padding: '16px 24px' }}>{error}</p>}
 
-      {!photos ? (
+      {!shown ? (
         <div className="empty">
           <p className="note">Loading…</p>
         </div>
-      ) : photos.length === 0 ? (
+      ) : shown.length === 0 ? (
         <div className="empty">
-          <h2>Empty roll</h2>
+          {/* A roll of nothing but hidden frames is not an empty roll, and telling
+              the owner to add photos to one they can see with a click is a lie. */}
+          <h2>{hiddenCount > 0 ? 'Nothing on the sheet' : 'Empty roll'}</h2>
           <p className="note">
-            Add JPEGs and RAFs together — matching filenames become one frame.
+            {hiddenCount > 0
+              ? `Every frame on this roll is hidden (${hiddenCount}).`
+              : 'Add JPEGs and RAFs together — matching filenames become one frame.'}
           </p>
         </div>
       ) : (
         <ContactSheet
-          photos={photos}
+          photos={shown}
           selected={selected}
           onOpen={setOpenIndex}
           onToggle={toggle}
         />
       )}
 
-      {openIndex !== undefined && photos && (
+      {openIndex !== undefined && shown && (
         <Lightbox
-          photos={photos}
+          photos={shown}
           index={openIndex}
           onClose={() => setOpenIndex(undefined)}
           onNavigate={setOpenIndex}
           onDownload={download}
           onDelete={removePhoto}
           onSetCover={setCover}
+          onSetHidden={(photo, hidden) => setHidden([photo.photoId], hidden)}
         />
       )}
     </>

@@ -25,6 +25,12 @@ export interface Photo {
   hasRaw: boolean;
   /** Set once the derive Lambda has written thumb/large. */
   derivedAt?: string;
+  /**
+   * Admin-hidden: out of every share, still in the folder and still the owner's.
+   * Absent means visible, so nothing needs backfilling. It is not only a filter —
+   * the derivatives physically live under `f/hidden/…` while it is set.
+   */
+  hidden?: boolean;
   /** Populated from EXIF when available — shown in the lightbox. */
   camera?: string;
   lens?: string;

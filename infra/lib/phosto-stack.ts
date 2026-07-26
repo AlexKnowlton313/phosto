@@ -13,6 +13,7 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 
 const repoRoot = resolve(__dirname, '..', '..');
@@ -45,6 +46,9 @@ export interface PhostoStackProps extends cdk.StackProps {
  * own output.
  */
 const PREFIX = { derived: 'f/', originals: 'orig/', raw: 'raw/' } as const;
+
+/** Literal so the API function can read it without depending on the distribution. */
+const DISTRIBUTION_ID_PARAM = '/phosto/distribution-id';
 
 export class PhostoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: PhostoStackProps) {
@@ -422,6 +426,49 @@ function handler(event) {
       // while the site and the photos share a bucket.
       prune: false,
     });
+
+    /*
+     * Hiding a frame moves its bytes out of the share's key prefix, but a POP
+     * that already cached the visible URL keeps serving it — derivatives carry
+     * `immutable, max-age=1y` — and reopening the share mints a fresh cookie
+     * that still covers that URL. Without an invalidation, hiding revokes
+     * nothing at the edge, which is the entire point of the feature.
+     *
+     * The id travels through SSM rather than an environment variable because
+     * the distribution is downstream of the API function: Distribution → HttpApi
+     * → ApiFunction, so handing the function `distribution.distributionId` (or
+     * granting on the distribution ARN) closes a CloudFormation cycle. The
+     * parameter *name* is a literal, so reading it at runtime does not.
+     */
+    new ssm.StringParameter(this, 'DistributionIdParam', {
+      parameterName: DISTRIBUTION_ID_PARAM,
+      stringValue: distribution.distributionId,
+    });
+
+    apiFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ssm:GetParameter'],
+        resources: [
+          cdk.Arn.format(
+            {
+              service: 'ssm',
+              resource: 'parameter',
+              resourceName: DISTRIBUTION_ID_PARAM.replace(/^\//, ''),
+            },
+            this,
+          ),
+        ],
+      }),
+    );
+
+    apiFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['cloudfront:CreateInvalidation'],
+        // Wildcard for the same cycle reason: naming the distribution's ARN here
+        // would make the function's role depend on the distribution.
+        resources: ['*'],
+      }),
+    );
 
     // ---------------------------------------------------------------- outputs
 

@@ -1,4 +1,9 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import type { S3Event, S3EventRecord } from 'aws-lambda';
 import sharp from 'sharp';
 import * as db from '../shared/db.js';
@@ -48,6 +53,7 @@ async function writeDerivatives(
   pipeline: sharp.Sharp,
   folderId: string,
   photoId: string,
+  hidden: boolean,
 ): Promise<{ width?: number; height?: number }> {
   const metadata = await pipeline.metadata();
 
@@ -67,7 +73,7 @@ async function writeDerivatives(
       await s3.send(
         new PutObjectCommand({
           Bucket: BUCKET,
-          Key: derivedKey(folderId, photoId, name),
+          Key: derivedKey(folderId, photoId, name, hidden),
           Body: body,
           ContentType: 'image/webp',
           CacheControl: CACHE_CONTROL,
@@ -125,7 +131,38 @@ async function processRecord(record: S3EventRecord): Promise<void> {
     .catch(() => undefined);
 
   const exif = readExif(metadata?.exif);
-  const { width, height } = await writeDerivatives(pipeline, folderId, photoId);
+  // Re-deriving a hidden photo — a repair copy, or the copy a move makes into the
+  // new folder — must land back under `f/hidden/`, or it silently republishes the
+  // frame at the key every share cookie can read.
+  const wroteHidden = Boolean(photo.hidden);
+  const { width, height } = await writeDerivatives(pipeline, folderId, photoId, wroteHidden);
+
+  // The flag was read before decoding, and decoding a HEIC or a RAF takes
+  // seconds while a PATCH takes milliseconds — so "hide the bad frame as soon as
+  // it appears" reliably flips it mid-job. Whoever wrote last has to reconcile,
+  // and the API's own copy step found nothing to move because these objects did
+  // not exist yet. Re-read and republish rather than leave a hidden frame
+  // sitting at the key every share cookie can read.
+  const current = await db.findPhoto(folderId, photoId);
+  if (current && Boolean(current.hidden) !== wroteHidden) {
+    console.warn('Hidden flag changed while deriving; relocating', {
+      photoId,
+      from: wroteHidden,
+      to: Boolean(current.hidden),
+    });
+    await writeDerivatives(pipeline, folderId, photoId, Boolean(current.hidden));
+    await s3.send(
+      new DeleteObjectsCommand({
+        Bucket: BUCKET,
+        Delete: {
+          Objects: (Object.keys(DERIVATIVE_SIZES) as DerivativeName[]).map((name) => ({
+            Key: derivedKey(folderId, photoId, name, wroteHidden),
+          })),
+          Quiet: true,
+        },
+      }),
+    );
+  }
 
   const patch: Partial<Photo> = {
     ...exif,

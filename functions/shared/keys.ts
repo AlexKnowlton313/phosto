@@ -4,11 +4,20 @@ export const PREFIX_DERIVED = process.env.PREFIX_DERIVED ?? 'f/';
 export const PREFIX_ORIGINALS = process.env.PREFIX_ORIGINALS ?? 'orig/';
 export const PREFIX_RAW = process.env.PREFIX_RAW ?? 'raw/';
 
+/**
+ * `hidden` inserts a literal segment *before* the folder id, which is the whole
+ * enforcement: a share cookie is signed for `f/<folderId>/*` and the literal
+ * prefix diverges before the wildcard, so no share on that folder can reach a
+ * hidden frame — including cookies already sitting in a browser. The admin
+ * cookie covers `f/*` and so still reaches both. `folderId` is a UUID, so the
+ * segment cannot collide with a real folder.
+ */
 export const derivedKey = (
   folderId: string,
   photoId: string,
   name: DerivativeName,
-) => `${PREFIX_DERIVED}${folderId}/${photoId}/${name}.webp`;
+  hidden = false,
+) => `${PREFIX_DERIVED}${hidden ? 'hidden/' : ''}${folderId}/${photoId}/${name}.webp`;
 
 export const originalKey = (folderId: string, photoId: string, ext: string) =>
   `${PREFIX_ORIGINALS}${folderId}/${photoId}.${ext.toLowerCase()}`;

@@ -55,6 +55,7 @@ This is the most important thing to understand before changing anything.
 
 ```
 f/<folderId>/<photoId>/{thumb,large}.webp          derivatives — signed COOKIES
+f/hidden/<folderId>/<photoId>/{thumb,large}.webp   hidden frames — admin cookie only
 orig/<folderId>/<photoId>.<ext>                    originals   — signed URL, per object
 raw/<folderId>/<photoId>.<ext>                     RAW         — signed URL, per object
 ```
@@ -67,6 +68,27 @@ They are separate for two independent reasons, and collapsing them breaks both:
    RAW is owner-only and has no share route at all.
 2. **The derive Lambda listens on `orig/` and `raw/` and writes to `f/`.** Sharing a
    prefix between input and output would make every write retrigger the function.
+
+Hiding a frame applies the same trick one level down. A share cookie is signed
+for `f/<folderId>/*` and the literal `hidden` segment diverges before the
+wildcard, so hiding revokes cookies already issued — which a list filter cannot.
+`f/hidden/…` still matches the `f/*` CloudFront *behavior* (a path pattern's `*`
+crosses `/`), so routing needs no change. Build every derivative key through
+`derivedKey(folderId, photoId, name, hidden)`; the flag is on the `Photo` record,
+so anything holding the item can read it. Missing it in the derive Lambda
+republishes a hidden frame at the visible key on the next re-derive.
+
+**Moving the bytes is only half of it.** Derivatives are written `immutable,
+max-age=1y` and `f/*` is on `CACHING_OPTIMIZED`, so a POP that already cached the
+visible URL keeps serving it — and reopening the share mints a fresh cookie that
+still covers that URL, so the hide achieves nothing at the edge. That is why the
+API holds `cloudfront:CreateInvalidation` and calls `invalidate()` after moving
+the objects. The distribution id travels through SSM because `Distribution →
+HttpApi → ApiFunction` means an env var or an ARN-scoped grant would close a
+CloudFormation cycle. What no server-side fix reaches is the viewer's own browser
+cache: `immutable` means their open tab may never revalidate. Hiding revokes the
+frame for everyone they forwarded the link to, not for the person who already had
+it open.
 
 Verify access control with a canary rather than by reading the config: upload an
 object with known bytes under `f/` and confirm an unsigned fetch does not return

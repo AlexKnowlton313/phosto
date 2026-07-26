@@ -10,7 +10,7 @@ is correct if they are never built and wrong if they are.
 
 | Doc | Server today | Client today |
 |---|---|---|
-| [hidden-photos.md](hidden-photos.md) | none | none |
+
 | [share-management.md](share-management.md) | complete | none |
 
 Cover photos shipped on 2026-07-26 and its doc is gone. Multi-select download
@@ -21,13 +21,13 @@ comes up, the two things that doc got right are that a zipping Lambda is the wro
 answer — it routes the bytes around CloudFront and into a billed Lambda response —
 and that DEFLATE buys nothing on already-compressed JPEG and RAF.
 
-Moving photos between folders shipped on 2026-07-26 and its doc is gone. Read
-`movePhotoAndObjects` in `functions/api/index.ts` before touching `hidden-photos`:
-it is the worked example of the ordering both features need — record first, then
-`orig/` (which retriggers derivation at the new key), then `raw/`, and only then
-the old objects. `hidden-photos` is the one remaining feature that moves S3
-objects between key prefixes, which is why it can quietly weaken sharing if the
-steps run in the wrong order.
+Moving photos between folders and hiding frames both shipped on 2026-07-26 and
+their docs are gone with them. They are the two features that move S3 objects
+between key prefixes, and they order the steps *differently* on purpose: a move
+writes the record first, because the copy of the original retriggers derivation
+and derive drops an event whose photo it cannot find; a hide copies the bytes
+first, because the flag is the only thing naming the new keys and flipping it
+early points every URL at objects that do not exist yet. See `CLAUDE.md`.
 
 Folder settings — rename and delete — shipped on 2026-07-26 and its doc is gone.
 Deleting a roll that still holds frames moves them to the orphan roll instead of

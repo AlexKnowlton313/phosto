@@ -90,7 +90,7 @@ function Frame({
     // are centre-cropped here and shown whole in the lightbox.
     <div className="cell">
       <button
-        className={selected ? 'frame frame-selected' : 'frame'}
+        className={`frame${selected ? ' frame-selected' : ''}${photo.hidden ? ' frame-hidden' : ''}`}
         onClick={selecting ? onToggle : onOpen}
         // Only a toggle while the mode is on; outside it this button opens a
         // dialog and announcing it as pressable would be a lie.
@@ -109,6 +109,9 @@ function Frame({
         ) : (
           <span className="frame-pending">DEVELOPING</span>
         )}
+
+        {/* Only ever rendered while the admin has asked to see hidden frames. */}
+        {photo.hidden && <span className="frame-tag">HIDDEN</span>}
 
         <span className="frame-no">{frameNumber}</span>
       </button>

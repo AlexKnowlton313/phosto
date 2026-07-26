@@ -12,6 +12,8 @@ export interface PhotoView {
   width?: number;
   height?: number;
   ready: boolean;
+  /** Admin only in practice: a share never lists a hidden frame at all. */
+  hidden?: boolean;
   hasRaw: boolean;
   canDownload: boolean;
   camera?: string;
@@ -144,6 +146,17 @@ export const adminApi = (token: string) => ({
     request<void>(
       `/api/folders/${folderId}/photos/${photoId}`,
       { method: 'DELETE' },
+      token,
+    ),
+
+  /**
+   * Also physical: the derivatives move to `f/hidden/…`, which no share cookie
+   * reaches, so a link already open in someone's browser loses the frame too.
+   */
+  setPhotoHidden: (folderId: string, photoId: string, hidden: boolean) =>
+    request<PhotoView>(
+      `/api/folders/${folderId}/photos/${photoId}`,
+      { method: 'PATCH', body: JSON.stringify({ hidden }) },
       token,
     ),
 

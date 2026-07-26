@@ -34,6 +34,7 @@ import {
   signFolderCookies,
   signObjectUrl,
 } from '../shared/signing.js';
+import { invalidate } from '../shared/invalidate.js';
 import {
   DERIVATIVE_SIZES,
   ORPHAN_FOLDER_ID,
@@ -122,6 +123,7 @@ function presentPhoto(photo: Photo, allowDownload: boolean, allowRaw: boolean) {
     width: photo.width,
     height: photo.height,
     ready: Boolean(photo.derivedAt),
+    hidden: photo.hidden,
     hasRaw: allowRaw && photo.hasRaw,
     canDownload: allowDownload && Boolean(photo.originalExt),
     camera: photo.camera,
@@ -132,7 +134,10 @@ function presentPhoto(photo: Photo, allowDownload: boolean, allowRaw: boolean) {
     focalLength: photo.focalLength,
     urls: Object.fromEntries(
       (Object.keys(DERIVATIVE_SIZES) as (keyof typeof DERIVATIVE_SIZES)[]).map(
-        (name) => [name, `/${derivedKey(photo.folderId, photo.photoId, name)}`],
+        (name) => [
+          name,
+          `/${derivedKey(photo.folderId, photo.photoId, name, photo.hidden)}`,
+        ],
       ),
     ),
   };
@@ -243,11 +248,20 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
 /** Every object a photo owns under one folder — what delete removes and what a
  * move leaves behind at the source. */
 const photoObjectKeys = (folderId: string, photo: Photo) => [
+  // Off the record rather than a parameter: a hidden photo's derivatives are
+  // under `f/hidden/`, and every caller here already holds the item — so delete
+  // and a move's source cleanup both follow the flag without being told to.
   ...Object.keys(DERIVATIVE_SIZES).map((name) =>
-    derivedKey(folderId, photo.photoId, name as keyof typeof DERIVATIVE_SIZES),
+    derivedKey(
+      folderId,
+      photo.photoId,
+      name as keyof typeof DERIVATIVE_SIZES,
+      photo.hidden,
+    ),
   ),
-  // Photos derived before the middle size was dropped still have one in S3.
-  // Listed explicitly so deleting them does not leave a billed orphan behind.
+  // Photos derived before the middle size was dropped still have one in S3, and
+  // always at the visible key — hiding deletes that one rather than moving it,
+  // since nothing renders it. Listed so deleting leaves no billed orphan behind.
   `${PREFIX_DERIVED}${folderId}/${photo.photoId}/medium.webp`,
   ...(photo.originalExt
     ? [originalKey(folderId, photo.photoId, photo.originalExt)]
@@ -353,6 +367,101 @@ async function movePhotoAndObjects(
 }
 
 /**
+ * Hides or unhides one frame, moving its derivatives between `f/<folder>/…` and
+ * `f/hidden/<folder>/…`.
+ *
+ * A boolean filtered out of `openShare` would not have been enough. The reason
+ * to hide a frame is almost always that it was already shared, and that viewer's
+ * browser is holding the derivative URL — in history, in cache, in an open tab.
+ * A list filter leaves that URL working, and re-opening the share link mints a
+ * fresh cookie for the whole folder prefix. Moving the bytes revokes it.
+ *
+ * Copy, flip, delete — the OPPOSITE order from `movePhotoAndObjects`, and for a
+ * reason that does not generalise. A move needs the record ahead of the bytes
+ * because derive drops an event whose photo it cannot find. Nothing re-derives
+ * here: the flag is the only thing pointing at these keys, so it must not be
+ * flipped until the bytes it names exist. Both copies are live in between, so
+ * neither the grid nor an open share renders a hole mid-flight.
+ */
+async function setPhotoHidden(
+  event: APIGatewayProxyEventV2,
+  folderId: string,
+  photoId: string,
+) {
+  const { hidden } = parseBody<{ hidden?: boolean }>(event);
+  if (typeof hidden !== 'boolean') throw new HttpError(400, 'hidden must be a boolean');
+
+  const folder = await db.getFolder(folderId);
+  if (!folder) throw new HttpError(404, 'Folder not found');
+
+  const photo = await db.findPhoto(folderId, photoId);
+  if (!photo) throw new HttpError(404, 'Photo not found');
+
+  const names = Object.keys(DERIVATIVE_SIZES) as Array<keyof typeof DERIVATIVE_SIZES>;
+
+  // Before the S3 work, not after. `shareCover` streams the cover through
+  // `/s/<token>/og.webp` with no cookie at all, so a throw further down must not
+  // leave a hidden frame still named as the roll's cover.
+  if (hidden && folder.coverPhotoId === photoId) await db.clearCover(folderId);
+
+  // Deliberately not guarded on the flag actually changing. Every step below is
+  // idempotent, and a retry is the only repair available when a previous attempt
+  // flipped the flag and then failed to move the bytes — which would otherwise
+  // leave the record claiming hidden while the share prefix still served it, a
+  // state no amount of re-clicking Hide could fix.
+  const stale = names.map((name) => derivedKey(folderId, photoId, name, !hidden));
+
+  for (const name of names) {
+    await s3
+      .send(
+        new CopyObjectCommand({
+          Bucket: BUCKET,
+          CopySource: `${BUCKET}/${derivedKey(folderId, photoId, name, !hidden)}`,
+          Key: derivedKey(folderId, photoId, name, hidden),
+        }),
+      )
+      .catch((err: { name?: string }) => {
+        // Nothing at the source is the normal case twice over: a frame still
+        // DEVELOPING has no derivatives yet, and a retry finds them already moved.
+        if (err.name !== 'NoSuchKey') throw err;
+      });
+  }
+
+  await db.updatePhoto(photo, { hidden });
+
+  if (hidden) {
+    // Never moved, only removed. Nothing renders the dropped middle size, but it
+    // sits at a key anyone who saw `large.webp` can guess from it, so for a photo
+    // old enough to have one it would be the hole this whole move closes.
+    stale.push(`${PREFIX_DERIVED}${folderId}/${photoId}/medium.webp`);
+  }
+
+  const deleted = await s3.send(
+    new DeleteObjectsCommand({
+      Bucket: BUCKET,
+      Delete: { Objects: stale.map((Key) => ({ Key })), Quiet: true },
+    }),
+  );
+  // Quiet mode still reports per-key failures, and it reports them in the
+  // response rather than by throwing. Unchecked, a delete that left large.webp
+  // behind would return 200 on a frame that is still fully readable by a share.
+  if (deleted.Errors?.length) {
+    throw new HttpError(
+      500,
+      `Could not remove ${deleted.Errors.length} old derivative(s); retry`,
+    );
+  }
+
+  // The bytes are gone from the origin, but a POP that cached the old URL will
+  // keep serving it for a year. For hiding, that cached copy *is* the leak.
+  await invalidate(stale.map((key) => `/${key}`));
+
+  console.log('Photo hidden flag set', { photoId, folderId, hidden, stale });
+
+  return json(200, presentPhoto({ ...photo, hidden }, true, true));
+}
+
+/**
  * Creates the orphan roll the first time something needs it.
  *
  * Lazily rather than from a bootstrap script: a fresh stack should work with
@@ -381,15 +490,19 @@ async function ensureOrphanFolder(): Promise<void> {
   );
 }
 
-/** First key under any of the folder's three prefixes, or null if it has none. */
+/** First key under any prefix the folder owns, or null if it has none. */
 async function firstObjectUnder(folderId: string): Promise<string | null> {
-  for (const prefix of [PREFIX_DERIVED, PREFIX_ORIGINALS, PREFIX_RAW]) {
+  // `f/hidden/<folderId>/` is listed separately because it is not under
+  // `f/<folderId>/` — that is the entire point of the hidden prefix, and it also
+  // means a plain three-prefix sweep would miss a hidden frame's derivatives.
+  for (const prefix of [
+    `${PREFIX_DERIVED}${folderId}/`,
+    `${PREFIX_DERIVED}hidden/${folderId}/`,
+    `${PREFIX_ORIGINALS}${folderId}/`,
+    `${PREFIX_RAW}${folderId}/`,
+  ]) {
     const res = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: BUCKET,
-        Prefix: `${prefix}${folderId}/`,
-        MaxKeys: 1,
-      }),
+      new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix, MaxKeys: 1 }),
     );
     if (res.Contents?.length) return res.Contents[0].Key!;
   }
@@ -486,7 +599,11 @@ async function openShare(token: string) {
   if (!folder) throw new HttpError(404, 'This link has expired or does not exist');
 
   const photos = (await db.listPhotos(share.folderId))
-    .filter((p) => p.derivedAt) // hide photos whose derivatives are still building
+    // Still building, or hidden. The hidden ones are unreachable anyway — their
+    // bytes are outside this cookie's prefix — so this is only about not showing
+    // a viewer a frame-shaped hole. `photoCount` below reads off the filtered
+    // list, which is why the share's count is right for free.
+    .filter((p) => p.derivedAt && !p.hidden)
     .sort(byTakenAtDesc);
 
   const cookies = await signFolderCookies(
@@ -519,6 +636,11 @@ async function shareDownload(token: string, photoId: string) {
 
   const photo = await db.findPhoto(share.folderId, photoId);
   if (!photo) throw new HttpError(404, 'Photo not found');
+  // Originals never move — they are reached by a per-object signed URL, not by
+  // the cookie — so this is the one place hiding is enforced in code. The same
+  // 404 as a missing photo, deliberately: a share must not be able to tell
+  // "hidden" from "never existed".
+  if (photo.hidden) throw new HttpError(404, 'Photo not found');
 
   return json(200, await downloadPayload(photo, false));
 }
@@ -710,6 +832,14 @@ const routes: Array<{
       if (patch.name !== undefined && !patch.name?.trim()) {
         throw new HttpError(400, 'name cannot be empty');
       }
+      // `shareCover` streams the cover with no cookie at all, so a hidden frame
+      // named here would be published at 2400px to anyone holding the share URL
+      // — undoing the hide through a route that never looks at the photo record.
+      if (patch.coverPhotoId !== undefined) {
+        const cover = await db.findPhoto(folderId, patch.coverPhotoId);
+        if (!cover) throw new HttpError(404, 'Photo not found');
+        if (cover.hidden) throw new HttpError(409, 'A hidden frame cannot be a cover');
+      }
       await db.updateFolder(folderId, {
         name: patch.name?.trim(),
         coverPhotoId: patch.coverPhotoId,
@@ -768,6 +898,15 @@ const routes: Array<{
     pattern: /^\/api\/folders\/([\w-]+)\/photos\/([\w-]+)$/,
     admin: true,
     handle: (_e, [folderId, photoId]) => deletePhotoAndObjects(folderId, photoId),
+  },
+  {
+    // Per photo, not a batch: each one is two CopyObjects and a delete of a few
+    // hundred KB, and the client's bulk hide is a loop of these — so unlike a
+    // move, nothing here has to finish inside one 15-second invocation.
+    method: 'PATCH',
+    pattern: /^\/api\/folders\/([\w-]+)\/photos\/([\w-]+)$/,
+    admin: true,
+    handle: (event, [folderId, photoId]) => setPhotoHidden(event, folderId, photoId),
   },
   {
     // Bulk only. The plan named a per-photo route too, but multi-select landed

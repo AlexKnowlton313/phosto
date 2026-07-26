@@ -114,6 +114,24 @@ export async function updateFolder(
 }
 
 /**
+ * Its own function because `setExpression` can only SET: an `undefined` in a
+ * patch is skipped, so there is no way to spell "drop this field" through
+ * `updateFolder`. Hiding the frame a roll uses as its cover needs exactly that,
+ * or the roll card goes on advertising the frame just taken out of circulation.
+ */
+export async function clearCover(folderId: string): Promise<void> {
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: { pk: folderPk(folderId), sk: 'META' },
+      UpdateExpression: 'REMOVE coverPhotoId SET updatedAt = :now',
+      ExpressionAttributeValues: { ':now': new Date().toISOString() },
+      ConditionExpression: 'attribute_exists(pk)',
+    }),
+  );
+}
+
+/**
  * The photoCount bump as a bare command shape, so `movePhoto` can put the same
  * guarded expression inside its transaction rather than restating it. The
  * condition is what makes a move fail cleanly when a folder is deleted mid-flight.
