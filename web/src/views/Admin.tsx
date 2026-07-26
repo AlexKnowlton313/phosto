@@ -27,7 +27,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   // back button and a reload both land where the user expects. `#<folderId>`
   // rather than a path because /f/* is a CloudFront behaviour, not the SPA.
   const [folderId, setFolderId] = useState(() => location.hash.slice(1));
-  const [photos, setPhotos] = useState<PhotoView[]>([]);
+  // undefined until the first listPhotos lands — an empty array is a real
+  // answer ("empty roll"), and the two must not render the same.
+  const [photos, setPhotos] = useState<PhotoView[]>();
   const [openIndex, setOpenIndex] = useState<number>();
   const [upload, setUpload] = useState<UploadState>();
   const [shareUrl, setShareUrl] = useState<string>();
@@ -63,7 +65,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   }, [folderId, token]);
 
   useEffect(() => {
-    setPhotos([]);
+    setPhotos(undefined);
     setShareUrl(undefined);
     setOpenIndex(undefined);
     refresh().catch((err: Error) => setError(err.message));
@@ -71,7 +73,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   // Derivatives land a few seconds after upload, so poll while any are pending.
   useEffect(() => {
-    if (!folderId || photos.every((p) => p.ready)) return;
+    if (!folderId || !photos || photos.every((p) => p.ready)) return;
     const timer = setInterval(refresh, 4000);
     return () => clearInterval(timer);
   }, [folderId, photos, refresh]);
@@ -252,7 +254,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   return (
     <>
-      <EdgeHeader name={current.name} photos={photos} />
+      <EdgeHeader name={current.name} photos={photos ?? []} />
 
       <div className="toolbar">
         <button className="btn" onClick={() => (location.hash = '')}>
@@ -308,7 +310,11 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
       {error && <p className="error" style={{ padding: '16px 24px' }}>{error}</p>}
 
-      {photos.length === 0 ? (
+      {!photos ? (
+        <div className="empty">
+          <p className="note">Loading…</p>
+        </div>
+      ) : photos.length === 0 ? (
         <div className="empty">
           <h2>Empty roll</h2>
           <p className="note">
@@ -319,7 +325,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         <ContactSheet photos={photos} onOpen={setOpenIndex} />
       )}
 
-      {openIndex !== undefined && (
+      {openIndex !== undefined && photos && (
         <Lightbox
           photos={photos}
           index={openIndex}
