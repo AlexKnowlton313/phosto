@@ -11,7 +11,6 @@ is correct if they are never built and wrong if they are.
 | Doc | Server today | Client today |
 |---|---|---|
 | [hidden-photos.md](hidden-photos.md) | none | none |
-| [folder-settings.md](folder-settings.md) | complete | none |
 | [share-management.md](share-management.md) | complete | none |
 
 Cover photos shipped on 2026-07-26 and its doc is gone. Multi-select download
@@ -29,6 +28,13 @@ it is the worked example of the ordering both features need — record first, th
 the old objects. `hidden-photos` is the one remaining feature that moves S3
 objects between key prefixes, which is why it can quietly weaken sharing if the
 steps run in the wrong order.
+
+Folder settings — rename and delete — shipped on 2026-07-26 and its doc is gone.
+Deleting a roll that still holds frames moves them to the orphan roll instead of
+refusing, which is the one rule that outranks everything else here: this is the
+owner's photo storage, not only a way to show photos, so no path through the API
+may destroy an image as a side effect of tidying folders. See `ORPHAN_FOLDER_ID`
+in `functions/shared/types.ts`.
 
 Read [../architecture.md](../architecture.md) first if you have not — the three-way
 prefix split it describes constrains most of them.

@@ -32,6 +32,15 @@ export interface FolderView {
   coverPhotoId?: string;
 }
 
+/**
+ * Mirrors `ORPHAN_FOLDER_ID` in `functions/shared/types.ts` — the two trees do
+ * not share a tsconfig, so the constant is restated the same way `FolderView`
+ * restates `Folder`. A fixed literal, never a UUID, so it cannot collide. The
+ * server creates the roll on first use and refuses to rename or delete it; the
+ * client's only job is not to offer either.
+ */
+export const ORPHAN_FOLDER_ID = 'orphaned';
+
 export interface ShareView {
   folder: { name: string; photoCount: number };
   permissions: { allowDownload: boolean };
@@ -107,6 +116,10 @@ export const adminApi = (token: string) => ({
       { method: 'PATCH', body: JSON.stringify(patch) },
       token,
     ),
+
+  /** 409s on a folder that still holds photos, and always on the orphan roll. */
+  deleteFolder: (folderId: string) =>
+    request<void>(`/api/folders/${folderId}`, { method: 'DELETE' }, token),
 
   listPhotos: (folderId: string) =>
     request<{ photos: PhotoView[] }>(`/api/folders/${folderId}/photos`, {}, token),

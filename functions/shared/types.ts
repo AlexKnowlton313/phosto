@@ -46,6 +46,20 @@ export interface Share {
 }
 
 /**
+ * The roll photos fall into when their folder is deleted, so that deleting a
+ * folder can never destroy an image.
+ *
+ * A fixed literal id rather than a flag on the item or a UUID recorded
+ * somewhere: `createFolder` mints `randomUUID()`, so this string cannot collide
+ * with a real roll, and every check for it is a string compare with no lookup
+ * behind it. Same trick as the three key prefixes — the identifier itself
+ * expresses the rule. Its objects land under `f/orphaned/…` like any other
+ * folder's, so nothing in the stack has to know about it.
+ */
+export const ORPHAN_FOLDER_ID = 'orphaned';
+export const ORPHAN_FOLDER_NAME = 'Orphaned frames';
+
+/**
  * Two sizes, not three. `thumb` fills the contact sheet and `large` is what the
  * lightbox renders; a middle size was written for every photo and never displayed
  * by anything, so it was a third of the derive cost and storage for nothing.

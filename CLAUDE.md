@@ -180,6 +180,20 @@ JPEG wins as the preview source; the RAF path only runs for RAW-only photos. The
 batch is capped at 200 files in `createUploads` and the admin UI does not chunk, so
 dropping more than that on it fails the whole selection with a 400.
 
+One folder id is a literal rather than a UUID: `orphaned` (`ORPHAN_FOLDER_ID`).
+It is created lazily on first use, refuses PATCH of `name` and every DELETE, and
+is otherwise an ordinary folder — keys are `f/orphaned/…` like any other. Real
+ids come from `randomUUID()`, so the literal cannot collide.
+
+`DELETE /api/folders/<id>` still **refuses** a roll that holds frames; moving
+them to `orphaned` first is a client workflow in `deleteRoll`, not something the
+route does for you. It refuses twice over: once on the photo count, and again if
+any object remains under the folder's three prefixes. The second check is the
+one that matters — a move writes the record before it copies the bytes, so a
+batch killed mid-flight leaves objects under the old prefix with no record
+naming them, and deleting the folder then removes the last handle to a
+photograph that is still sitting in the bucket.
+
 Share tokens are stored SHA-256 hashed. `getShare` checks expiry in code because
 DynamoDB TTL deletion can lag up to 48 hours.
 

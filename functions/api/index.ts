@@ -5,6 +5,7 @@ import {
   PutObjectCommand,
   S3Client,
   DeleteObjectsCommand,
+  ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl as presignS3 } from '@aws-sdk/s3-request-presigner';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
@@ -23,6 +24,8 @@ import {
   isRawExt,
   originalKey,
   PREFIX_DERIVED,
+  PREFIX_ORIGINALS,
+  PREFIX_RAW,
   rawKey,
 } from '../shared/keys.js';
 import {
@@ -31,7 +34,13 @@ import {
   signFolderCookies,
   signObjectUrl,
 } from '../shared/signing.js';
-import { DERIVATIVE_SIZES, type Folder, type Photo } from '../shared/types.js';
+import {
+  DERIVATIVE_SIZES,
+  ORPHAN_FOLDER_ID,
+  ORPHAN_FOLDER_NAME,
+  type Folder,
+  type Photo,
+} from '../shared/types.js';
 
 const s3 = new S3Client({});
 const BUCKET = process.env.BUCKET_NAME!;
@@ -344,6 +353,50 @@ async function movePhotoAndObjects(
 }
 
 /**
+ * Creates the orphan roll the first time something needs it.
+ *
+ * Lazily rather than from a bootstrap script: a fresh stack should work with
+ * nothing run against it first, and a roll that has never received an orphan is
+ * a row in the folder list that only ever confuses. The read-then-write is not
+ * atomic, but the id is fixed and the loser of a race rewrites the same item —
+ * the only casualty would be a `photoCount` reset, which the moves that follow
+ * then re-increment from zero. Nothing about a photo depends on it.
+ */
+async function ensureOrphanFolder(): Promise<void> {
+  if (await db.getFolder(ORPHAN_FOLDER_ID)) return;
+  const now = new Date().toISOString();
+  await db.putFolder(
+    {
+      folderId: ORPHAN_FOLDER_ID,
+      name: ORPHAN_FOLDER_NAME,
+      createdAt: now,
+      updatedAt: now,
+      photoCount: 0,
+    },
+    // getFolder is eventually consistent and a plain Put is a whole-item
+    // overwrite, so without this a stale read partway through a 12-chunk
+    // orphaning re-creates the folder at photoCount 0 and drops its cover.
+    // Losing the race is the expected outcome, not an error.
+    { ifAbsent: true },
+  );
+}
+
+/** First key under any of the folder's three prefixes, or null if it has none. */
+async function firstObjectUnder(folderId: string): Promise<string | null> {
+  for (const prefix of [PREFIX_DERIVED, PREFIX_ORIGINALS, PREFIX_RAW]) {
+    const res = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: BUCKET,
+        Prefix: `${prefix}${folderId}/`,
+        MaxKeys: 1,
+      }),
+    );
+    if (res.Contents?.length) return res.Contents[0].Key!;
+  }
+  return null;
+}
+
+/**
  * Whole batch, one report. A 404 for frame 12 would hide the thirty that did
  * move, so every outcome is per photo and the caller decides what to retry —
  * including when the batch is one photo long, so the shape never changes under
@@ -362,12 +415,14 @@ async function movePhotos(event: APIGatewayProxyEventV2, folderId: string) {
   }
   // Far below createUploads' 200: that one mints presigned URLs locally, while
   // every photo here is a query, a transaction, up to two CopyObjects and a
-  // delete, all serial, against a 15-second Lambda timeout. A batch killed
-  // mid-loop leaves the client with no report at all, so the cap is the report.
-  if (photoIds.length > 25) throw new HttpError(400, 'Batch limited to 25 photos');
+  // delete, all serial, against a 15-second Lambda timeout. Ten leaves real
+  // headroom: a batch killed mid-loop reports nothing, and a move interrupted
+  // between the record and the copy strands bytes under the old prefix.
+  if (photoIds.length > 10) throw new HttpError(400, 'Batch limited to 10 photos');
 
   const source = await db.getFolder(folderId);
   if (!source) throw new HttpError(404, 'Folder not found');
+  if (toFolderId === ORPHAN_FOLDER_ID) await ensureOrphanFolder();
   if (!(await db.getFolder(toFolderId))) {
     throw new HttpError(404, 'Destination folder not found');
   }
@@ -643,8 +698,20 @@ const routes: Array<{
     admin: true,
     handle: async (event, [folderId]) => {
       const patch = parseBody<Partial<Folder>>(event);
+      // The orphan roll is a fixture, and its name is the only thing telling the
+      // owner why photos are sitting in it. A cover is harmless, so only the
+      // rename is refused rather than the whole patch.
+      if (folderId === ORPHAN_FOLDER_ID && patch.name !== undefined) {
+        throw new HttpError(409, 'The orphaned roll cannot be renamed');
+      }
+      // setExpression only skips `undefined`, so without this an empty or
+      // whitespace name writes through and leaves a roll with no title at all.
+      // createFolder has always refused one; this is the same rule on update.
+      if (patch.name !== undefined && !patch.name?.trim()) {
+        throw new HttpError(400, 'name cannot be empty');
+      }
       await db.updateFolder(folderId, {
-        name: patch.name,
+        name: patch.name?.trim(),
         coverPhotoId: patch.coverPhotoId,
       });
       return json(200, await db.getFolder(folderId));
@@ -655,9 +722,26 @@ const routes: Array<{
     pattern: /^\/api\/folders\/([\w-]+)$/,
     admin: true,
     handle: async (_e, [folderId]) => {
+      // It is where photos go when their roll is deleted, so deleting it is the
+      // one way this API could still lose an image.
+      if (folderId === ORPHAN_FOLDER_ID) {
+        throw new HttpError(409, 'The orphaned roll cannot be deleted');
+      }
       const photos = await db.listPhotos(folderId);
       if (photos.length > 0) {
         throw new HttpError(409, `Folder still holds ${photos.length} photos`);
+      }
+      // An empty photo list is not proof the folder is empty. A move writes the
+      // record before it copies the bytes, so a batch killed mid-flight — the
+      // Lambda has 15 seconds — leaves records pointing at the destination while
+      // the objects sit here. Deleting the folder then removes the last thing
+      // naming that prefix, and only `aws s3 ls` can find the frame again.
+      const stranded = await firstObjectUnder(folderId);
+      if (stranded) {
+        throw new HttpError(
+          409,
+          `Folder still holds objects in S3 (${stranded}); a move may have been interrupted`,
+        );
       }
       await db.deleteFolder(folderId);
       return json(204, {});

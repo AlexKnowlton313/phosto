@@ -111,6 +111,24 @@ button {
   line-height: 1.05;
 }
 
+/* Inside the h1, so renaming reads as editing the title rather than as another
+   toolbar action. Uncoloured: neither accent is spare for it. */
+.edge-rename {
+  margin-left: 14px;
+  vertical-align: middle;
+  border: 0;
+  padding: 0;
+  background: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+
+.edge-rename:hover {
+  color: var(--ink);
+}
+
 .edge-data {
   margin-top: 8px;
   font-family: var(--mono);

@@ -88,8 +88,7 @@ with `ShareSummary` mirroring the stripped response shape — `id`, `folderId`,
 
 ## Interaction with folder deletion
 
-Deleting a folder currently leaves its shares behind; see the orphaned-shares
-section of [folder-settings.md](folder-settings.md). If that cascade is
-implemented, this list never shows a share whose folder is gone. If it is not, this
-list is the only place such rows would ever be visible — which is an argument for
-building the cascade first.
+Already handled. `db.deleteFolder` cascades the folder's shares before dropping
+its META item, so this list can never show a share whose folder is gone. The
+cascade lives in `db` rather than in the route so that no later caller can delete
+a folder and forget.

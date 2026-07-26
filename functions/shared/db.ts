@@ -47,19 +47,34 @@ const hasPatch = (patch: object) =>
 
 // --------------------------------------------------------------------- folders
 
-export async function putFolder(folder: Folder): Promise<void> {
-  await ddb.send(
-    new PutCommand({
-      TableName: TABLE,
-      Item: {
-        pk: folderPk(folder.folderId),
-        sk: 'META',
-        gsi1pk: 'ROOT',
-        gsi1sk: `${folder.createdAt}#${folder.folderId}`,
-        ...folder,
-      },
-    }),
-  );
+/**
+ * `ifAbsent` makes this a create rather than an overwrite, and swallows the
+ * refusal. A folder with a fixed id is created lazily by whichever request needs
+ * it first, and a plain Put would let a stale read from a second request clobber
+ * the live item back to photoCount 0 — losing that race is the correct outcome,
+ * not an error.
+ */
+export async function putFolder(
+  folder: Folder,
+  { ifAbsent = false } = {},
+): Promise<void> {
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: TABLE,
+        Item: {
+          pk: folderPk(folder.folderId),
+          sk: 'META',
+          gsi1pk: 'ROOT',
+          gsi1sk: `${folder.createdAt}#${folder.folderId}`,
+          ...folder,
+        },
+        ...(ifAbsent ? { ConditionExpression: 'attribute_not_exists(pk)' } : {}),
+      }),
+    );
+  } catch (err) {
+    if (!ifAbsent || (err as Error).name !== 'ConditionalCheckFailedException') throw err;
+  }
 }
 
 export async function getFolder(folderId: string): Promise<Folder | null> {
@@ -115,7 +130,18 @@ export async function bumpPhotoCount(folderId: string, delta: number): Promise<v
   await ddb.send(new UpdateCommand(photoCountUpdate(folderId, delta)));
 }
 
+/**
+ * Takes the folder's shares with it. A share hangs off `SHARE#<tokenHash>` with
+ * only a gsi1 pointer back at the folder, so dropping the META item alone leaves
+ * rows that mean nothing until their TTL fires — up to 365 days. Cascading here
+ * rather than in the route so no later caller can delete a folder and forget.
+ * Deletion is restricted to empty folders, so the share list is small.
+ */
 export async function deleteFolder(folderId: string): Promise<void> {
+  for (const share of await listSharesForFolder(folderId)) {
+    await deleteShare(share.tokenHash);
+  }
+
   await ddb.send(
     new DeleteCommand({ TableName: TABLE, Key: { pk: folderPk(folderId), sk: 'META' } }),
   );

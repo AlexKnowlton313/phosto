@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   adminApi,
+  ORPHAN_FOLDER_ID,
   saveAs,
   uploadFile,
   type AppConfig,
@@ -20,7 +21,7 @@ import { Lightbox } from '../components/Lightbox';
 const UPLOAD_CONCURRENCY = 4;
 
 /** Mirrors the server's cap in `movePhotos`, which is bounded by a 15s timeout. */
-const MOVE_BATCH = 25;
+const MOVE_BATCH = 10;
 
 interface UploadState {
   total: number;
@@ -42,6 +43,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const [upload, setUpload] = useState<UploadState>();
   const [shareUrl, setShareUrl] = useState<string>();
   const [error, setError] = useState<string>();
+  // A chunked move runs for a minute on a full roll. Without a running count it
+  // is indistinguishable from a hang, and the user's next move is a reload.
+  const [status, setStatus] = useState<string>();
   const { selected, toggle, clear, retain } = useSelection();
   // A batch runs for seconds with no feedback of its own, which makes a second
   // click likely — and two concurrent loops are exactly the burst the 150ms gap
@@ -246,6 +250,77 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     }
   };
 
+  const renameRoll = async () => {
+    if (!current) return;
+    const name = window.prompt('Rename this roll', current.name);
+    // Whitespace-only cancels rather than clearing the name. The API refuses it
+    // too, so this only saves the round trip.
+    if (!name?.trim()) return;
+    const folder = await api.updateFolder(current.folderId, { name: name.trim() });
+    setFolders((prev) => prev?.map((f) => (f.folderId === folder.folderId ? folder : f)));
+  };
+
+  /**
+   * Deleting a roll must never delete a photograph. An empty roll goes straight
+   * away; one that still holds frames sends them to the orphan roll first, so
+   * the destructive-looking button is only ever destructive to the folder.
+   */
+  const deleteRoll = async () => {
+    if (!current || !photos) return;
+    const ids = photos.map((p) => p.photoId);
+
+    if (
+      !window.confirm(
+        ids.length === 0
+          ? `Delete ${current.name}? The roll is empty.`
+          : `${current.name} still holds ${ids.length} frame(s).\n\n` +
+              'They move to the orphaned roll — nothing is deleted — and then ' +
+              'this roll goes. Continue?',
+      )
+    ) {
+      return;
+    }
+
+    setError(undefined);
+    setBatching(true);
+
+    try {
+      // The server caps a move at 25 because each photo is a transaction plus S3
+      // copies against a 15s timeout. A roll is 200 frames, so chunk to that cap
+      // rather than moving what fits and leaving the rest behind unannounced.
+      for (let i = 0; i < ids.length; i += MOVE_BATCH) {
+        const chunk = ids.slice(i, i + MOVE_BATCH);
+        setStatus(`Orphaning ${i + chunk.length} of ${ids.length} frames…`);
+        const { failed } = await api.movePhotos(
+          current.folderId,
+          chunk,
+          ORPHAN_FOLDER_ID,
+        );
+        // Stop here rather than pressing on to the delete: the roll must not be
+        // removed while it still holds a frame that refused to move.
+        if (failed.length > 0) {
+          throw new Error(
+            `${failed.length} frame(s) stayed put (${failed[0].message}) — roll kept`,
+          );
+        }
+      }
+
+      setStatus(undefined);
+      await api.deleteFolder(current.folderId);
+      // Both the orphan roll's count and its very existence may have changed.
+      setFolders((await api.listFolders()).folders);
+      location.hash = '';
+    } catch (err) {
+      // Surfaces the API's own 409 text, including the count it names when a
+      // bulk upload landed between this render and the click.
+      setError((err as Error).message);
+      await refresh();
+    } finally {
+      setStatus(undefined);
+      setBatching(false);
+    }
+  };
+
   const setCover = async (photo: PhotoView) => {
     if (!current) return;
     const folder = await api.updateFolder(current.folderId, {
@@ -346,14 +421,21 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   return (
     <>
-      <EdgeHeader name={current.name} photos={photos ?? []} />
+      {/* The orphan roll is an ordinary folder in every way but two: it is a
+          fixture, so it cannot be renamed or deleted, and the server refuses
+          both regardless of what this offers. */}
+      <EdgeHeader
+        name={current.name}
+        photos={photos ?? []}
+        onRename={current.folderId === ORPHAN_FOLDER_ID ? undefined : renameRoll}
+      />
 
       <div className="toolbar">
-        <button className="btn" onClick={() => (location.hash = '')}>
+        <button className="btn" disabled={batching} onClick={() => (location.hash = '')}>
           ← All rolls
         </button>
 
-        <button className="btn" onClick={() => fileInput.current?.click()}>
+        <button className="btn" disabled={batching} onClick={() => fileInput.current?.click()}>
           Add photos
         </button>
         <input
@@ -399,9 +481,15 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
         <div className="spacer" />
 
-        <button className="btn" onClick={share}>
+        <button className="btn" disabled={batching} onClick={share}>
           Share roll
         </button>
+
+        {photos && current.folderId !== ORPHAN_FOLDER_ID && (
+          <button className="btn btn-danger" disabled={batching} onClick={deleteRoll}>
+            {photos.length === 0 ? 'Delete roll' : 'Orphan frames & delete roll'}
+          </button>
+        )}
       </div>
 
       {upload && (
@@ -432,6 +520,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         </div>
       )}
 
+      {status && <p className="note" style={{ padding: '16px 24px' }}>{status}</p>}
       {error && <p className="error" style={{ padding: '16px 24px' }}>{error}</p>}
 
       {!photos ? (

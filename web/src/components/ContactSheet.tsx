@@ -162,10 +162,14 @@ export function EdgeHeader({
   name,
   photos,
   extra,
+  onRename,
 }: {
   name: string;
   photos: PhotoView[];
   extra?: string;
+  /** Admin only, and absent on the orphan roll — same pattern as Lightbox's
+   * onDelete. A share viewer must never see the control at all. */
+  onRename?: () => void;
 }) {
   const dates = photos
     .map((p) => p.takenAt)
@@ -192,7 +196,14 @@ export function EdgeHeader({
 
   return (
     <header className="edge">
-      <h1 className="edge-name">{name}</h1>
+      <h1 className="edge-name">
+        {name}
+        {onRename && (
+          <button className="edge-rename" onClick={onRename}>
+            Rename
+          </button>
+        )}
+      </h1>
       <div className="edge-data">
         <span>
           {photos.length} {photos.length === 1 ? 'frame' : 'frames'}
