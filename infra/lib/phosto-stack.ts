@@ -178,6 +178,13 @@ export class PhostoStack extends cdk.Stack {
       sourceMap: true,
       target: 'node24',
       format: cdk.aws_lambda_nodejs.OutputFormat.ESM,
+      // The AWS SDK ships CommonJS that calls require() internally. An ESM bundle
+      // has no require, so without this shim the function dies at init with
+      // 'Dynamic require of "node:https" is not supported' — before any handler
+      // code runs, which makes it look like a permissions or trigger problem
+      // rather than a bundling one.
+      banner:
+        "import{createRequire as __cr}from'module';const require=__cr(import.meta.url);",
     };
 
     const apiFn = new NodejsFunction(this, 'ApiFunction', {
@@ -286,6 +293,32 @@ export class PhostoStack extends cdk.Stack {
 
     const apiOriginDomain = `${httpApi.apiId}.execute-api.${this.region}.amazonaws.com`;
 
+    /*
+     * SPA routing, scoped to the default behavior.
+     *
+     * The obvious alternative — mapping 403/404 to /index.html via the
+     * distribution's custom error responses — is wrong here, because those apply
+     * to every behavior. An unsigned request for f/<id>/<photo>/thumb.webp would
+     * come back as `200 text/html` instead of a refusal, which hands <img> tags an
+     * HTML page rather than an error and hides expired share cookies behind what
+     * looks like a success. A function attached to this one behavior leaves the
+     * photo and API behaviors to fail honestly.
+     */
+    const spaRouting = new cloudfront.Function(this, 'SpaRouting', {
+      code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  // Anything without a file extension is a client-side route (e.g. /s/<token>).
+  if (!request.uri.split('/').pop().includes('.')) {
+    request.uri = '/index.html';
+  }
+  return request;
+}
+      `),
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      comment: 'phosto — serve index.html for client-side routes',
+    });
+
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       domainNames: [config.domainName],
       certificate,
@@ -300,6 +333,12 @@ export class PhostoStack extends cdk.Stack {
         responseHeadersPolicy:
           cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
         compress: true,
+        functionAssociations: [
+          {
+            function: spaRouting,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
       },
       additionalBehaviors: {
         'api/*': {
@@ -316,11 +355,9 @@ export class PhostoStack extends cdk.Stack {
         [`${PREFIX.originals}*`]: signedBehavior(),
         [`${PREFIX.raw}*`]: signedBehavior(),
       },
-      errorResponses: [
-        // SPA routing: /s/<token> is a client-side route, not an S3 key.
-        { httpStatus: 403, responseHttpStatus: 200, responsePagePath: '/index.html' },
-        { httpStatus: 404, responseHttpStatus: 200, responsePagePath: '/index.html' },
-      ],
+      // No custom errorResponses on purpose — see the SpaRouting function above.
+      // Distribution-wide error mapping would turn an unsigned photo request into
+      // a 200 HTML page.
     });
 
     new route53.ARecord(this, 'AliasRecord', {
