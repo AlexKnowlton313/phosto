@@ -288,16 +288,35 @@ button {
   grid-template-rows: 1fr auto;
 }
 
+/*
+ * Flex, not grid, and deliberately so.
+ *
+ * `display: grid` with `place-items: center` auto-sizes the implicit track to the
+ * image's intrinsic size, so `max-height: 100%` resolves against the *image*
+ * rather than the stage and constrains nothing — a 2400px frame renders at 2400px
+ * inside a 754px box, overflowing a fixed-position parent that cannot scroll. The
+ * result looks like the viewer is stuck zoomed in.
+ *
+ * A flex container has a definite height here, so percentage max-* on the item
+ * resolves against the stage. min-height/min-width: 0 stop the item's intrinsic
+ * size from forcing the flex line open.
+ */
 .lightbox-stage {
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 24px;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .lightbox-stage img {
   max-width: 100%;
   max-height: 100%;
+  /* Never upscale past the derivative's real pixels — contain alone would. */
+  width: auto;
+  height: auto;
   object-fit: contain;
 }
 

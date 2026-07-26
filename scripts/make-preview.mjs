@@ -83,7 +83,7 @@ for (const file of images) {
   await pipeline
     .clone()
     .rotate()
-    .resize(1600, 1600, { fit: 'inside' })
+    .resize(2400, 2400, { fit: 'inside' })
     .webp({ quality: 82 })
     .toFile(join(outDir, `${stem}-large.webp`));
 
