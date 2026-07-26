@@ -10,10 +10,16 @@
  *
  * Usage:
  *   node scripts/bulk-upload.mjs --folder "Summer 2026" --src /Volumes/Untitled/DCIM/100_FUJI
- *   node scripts/bulk-upload.mjs --folder "Summer 2026" --src ./photos --dry-run
+ *   node scripts/bulk-upload.mjs --folder "Nova Scotia" --src ./card --since 2026-07-18
+ *   node scripts/bulk-upload.mjs --folder "Before" --src ./card --until 2026-07-17 --dry-run
+ *
+ * --since/--until filter on the date the shutter fired, read from EXIF, and are
+ * inclusive on both ends.
  *
  * Safe to re-run: completed uploads are recorded in scripts/.upload-state.json and
- * skipped on the next pass, so an interrupted import resumes where it stopped.
+ * skipped on the next pass, so an interrupted import resumes where it stopped. The
+ * state file is keyed per folder, so importing a second date range does not think
+ * the first range's photos are already done.
  */
 import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
@@ -26,6 +32,8 @@ import { Upload } from '@aws-sdk/lib-storage';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { CloudFormationClient, DescribeStacksCommand } from '@aws-sdk/client-cloudformation';
+import sharp from 'sharp';
+import exifReader from 'exif-reader';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
@@ -53,6 +61,8 @@ function parseArgs(argv) {
     const flag = argv[i];
     if (flag === '--folder') args.folder = argv[++i];
     else if (flag === '--src') args.src = argv[++i];
+    else if (flag === '--since') args.since = argv[++i];
+    else if (flag === '--until') args.until = argv[++i];
     else if (flag === '--dry-run') args.dryRun = true;
     else if (flag === '--reset') args.reset = true;
   }
@@ -62,8 +72,18 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 
 if (!args.folder || !args.src) {
-  console.error('Usage: bulk-upload.mjs --folder "<name>" --src <directory> [--dry-run] [--reset]');
+  console.error(
+    'Usage: bulk-upload.mjs --folder "<name>" --src <directory>\n' +
+      '                      [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--dry-run] [--reset]',
+  );
   process.exit(1);
+}
+
+for (const [flag, value] of [['--since', args.since], ['--until', args.until]]) {
+  if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    console.error(`${flag} must be YYYY-MM-DD, got "${value}"`);
+    process.exit(1);
+  }
 }
 
 const config = JSON.parse(readFileSync(join(repoRoot, 'infra/config.json'), 'utf8'));
@@ -83,6 +103,27 @@ const extOf = (name) => extname(name).slice(1).toLowerCase();
  * are 4KB of metadata with a real image extension, so they must be filtered out or
  * they upload as corrupt photos.
  */
+/**
+ * The moment the shutter fired, as an ISO string.
+ *
+ * EXIF DateTimeOriginal carries no timezone — it is already local to wherever the
+ * camera was. It is read as-is and never converted, so `--since 2026-07-18` means
+ * the 18th as the photographer experienced it, not shifted by the machine running
+ * this script. Falls back to file mtime only if EXIF is unreadable.
+ */
+async function capturedAt(path) {
+  try {
+    const meta = await sharp(path).metadata();
+    const taken = exifReader(meta.exif)?.Photo?.DateTimeOriginal;
+    if (taken instanceof Date && !Number.isNaN(taken.getTime())) {
+      return taken.toISOString();
+    }
+  } catch {
+    // Unreadable or absent EXIF is not fatal; mtime is close enough to order by.
+  }
+  return statSync(path).mtime.toISOString();
+}
+
 async function scan(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   const groups = new Map();
@@ -111,7 +152,24 @@ async function scan(dir) {
     groups.set(stem, group);
   }
 
-  return [...groups.values()].sort((a, b) => a.stem.localeCompare(b.stem));
+  // Date the photo from its display original where there is one — a RAF and its
+  // JPEG share a timestamp, but the JPEG's EXIF is cheaper to reach.
+  const dated = await Promise.all(
+    [...groups.values()].map(async (group) => ({
+      ...group,
+      takenAt: await capturedAt((group.image ?? group.raw).path),
+    })),
+  );
+
+  return dated.sort((a, b) => a.takenAt.localeCompare(b.takenAt));
+}
+
+/** Inclusive on both ends, compared as plain YYYY-MM-DD calendar dates. */
+function inRange(group) {
+  const day = group.takenAt.slice(0, 10);
+  if (args.since && day < args.since) return false;
+  if (args.until && day > args.until) return false;
+  return true;
 }
 
 // ------------------------------------------------------------------- state
@@ -119,10 +177,16 @@ async function scan(dir) {
 const loadState = () =>
   !args.reset && existsSync(STATE_PATH)
     ? JSON.parse(readFileSync(STATE_PATH, 'utf8'))
-    : { folderId: null, done: {} };
+    : { folders: {} };
 
-const state = loadState();
-const saveState = () => writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+const allState = loadState();
+allState.folders ??= {};
+// Keyed by folder name so importing a second date range into a second folder does
+// not inherit the first range's "already done" marks.
+allState.folders[args.folder] ??= { folderId: null, done: {} };
+
+const state = allState.folders[args.folder];
+const saveState = () => writeFileSync(STATE_PATH, JSON.stringify(allState, null, 2));
 
 // ------------------------------------------------------------------ stack
 
@@ -165,7 +229,17 @@ const formatBytes = (bytes) => `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 
 async function main() {
   const src = resolve(args.src);
-  const groups = await scan(src);
+  const scanned = await scan(src);
+  const groups = scanned.filter(inRange);
+  const excluded = scanned.length - groups.length;
+
+  if (groups.length === 0) {
+    console.error(
+      `No photos matched${args.since ? ` --since ${args.since}` : ''}` +
+        `${args.until ? ` --until ${args.until}` : ''} in ${src}`,
+    );
+    process.exit(1);
+  }
 
   const imageBytes = groups.reduce((sum, g) => sum + (g.image?.size ?? 0), 0);
   const rawBytes = groups.reduce((sum, g) => sum + (g.raw?.size ?? 0), 0);
@@ -173,6 +247,16 @@ async function main() {
   const rawOnly = groups.filter((g) => !g.image && g.raw).length;
 
   console.log(`Source        ${src}`);
+  console.log(`Folder        ${args.folder}`);
+  if (args.since || args.until) {
+    console.log(
+      `Date filter   ${args.since ?? 'start'} … ${args.until ?? 'end'}  ` +
+        `(${excluded} photos outside the range, left alone)`,
+    );
+  }
+  console.log(
+    `Range         ${groups[0].takenAt.slice(0, 10)} … ${groups[groups.length - 1].takenAt.slice(0, 10)}`,
+  );
   console.log(`Photos        ${groups.length}  (${paired} JPEG+RAW pairs, ${rawOnly} RAW-only)`);
   console.log(`Originals     ${formatBytes(imageBytes)}`);
   console.log(`RAW           ${formatBytes(rawBytes)}  → Glacier IR after 30 days`);
@@ -239,7 +323,7 @@ async function main() {
               photoId,
               basename: group.stem,
               kind: group.image ? 'image' : 'raw-only',
-              takenAt: statSync((group.image ?? group.raw).path).mtime.toISOString(),
+              takenAt: group.takenAt,
               uploadedAt: now,
               hasRaw: Boolean(group.raw),
               originalExt: group.image?.ext,
