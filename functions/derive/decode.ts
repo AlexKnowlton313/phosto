@@ -11,7 +11,10 @@ import sharp from 'sharp';
  * instantiating the wasm module.
  */
 export async function decodeHeic(buffer: Buffer): Promise<sharp.Sharp> {
-  const { default: libheif } = await import('libheif-js/wasm-bundle');
+  // The `.js` is required, not stylistic: libheif-js declares no "exports" map,
+  // so Node's ESM resolver will not resolve the extensionless subpath and fails
+  // with ERR_MODULE_NOT_FOUND at decode time — long after deploy looks healthy.
+  const { default: libheif } = await import('libheif-js/wasm-bundle.js');
 
   const decoder = new libheif.HeifDecoder();
   const images = decoder.decode(buffer);

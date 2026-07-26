@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import * as db from '../shared/db.js';
 import { derivedKey, parseSourceKey } from '../shared/keys.js';
 import { DERIVATIVE_SIZES, type DerivativeName, type Photo } from '../shared/types.js';
-import { isHeic, openImage } from './decode.js';
+import { openImage } from './decode.js';
 import { readExif } from './exif.js';
 import { extractRafPreview, isRaf } from './raf.js';
 
@@ -116,11 +116,13 @@ async function processRecord(record: S3EventRecord): Promise<void> {
 
   const pipeline = await openImage(source.buffer, source.sourceExt);
 
-  // HEIC arrives here as raw RGBA, which carries no EXIF — read it from the
-  // original container instead of the decoded pipeline.
-  const metadata = isHeic(source.sourceExt)
-    ? undefined
-    : await pipeline.metadata().catch(() => undefined);
+  // EXIF is read from the source bytes rather than from `pipeline`, because a
+  // HEIC decodes to raw RGBA with no metadata attached. sharp can read a HEIF
+  // container's metadata without being able to decode its pixels, so this works
+  // for HEIC, for JPEG, and for the JPEG lifted out of a RAF alike.
+  const metadata = await sharp(source.buffer)
+    .metadata()
+    .catch(() => undefined);
 
   const exif = readExif(metadata?.exif);
   const { width, height } = await writeDerivatives(pipeline, folderId, photoId);

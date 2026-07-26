@@ -3,7 +3,7 @@
  * rather than installed locally, so it has no types available at build time — this
  * declares just the surface `derive/decode.ts` uses.
  */
-declare module 'libheif-js/wasm-bundle' {
+declare module 'libheif-js/wasm-bundle.js' {
   export interface HeifImage {
     get_width(): number;
     get_height(): number;
