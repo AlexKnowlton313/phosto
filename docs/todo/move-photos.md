@@ -114,7 +114,7 @@ build a "reorganise everything" batch tool.
 
 - **Stale cover.** If the moved photo was the source folder's `coverPhotoId`, that
   pointer now aims at a photo in another folder. Clear it in the same transaction
-  when `folder.coverPhotoId === photoId`. See [cover-photos.md](cover-photos.md).
+  when `folder.coverPhotoId === photoId`. See cover photos (shipped).
 - **Shares are not notified, and should not be.** A share on the source folder
   loses the photo; a share on the destination gains it. That is the correct
   meaning of a move, and it happens for free because the cookie scopes to the key

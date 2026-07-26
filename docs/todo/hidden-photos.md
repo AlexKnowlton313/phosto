@@ -188,7 +188,7 @@ label. Reads as a frame marked out on the sheet rather than a new colour languag
 - **Cover photos.** Do not offer a hidden frame as a cover, and clear
   `coverPhotoId` if the current cover is hidden — otherwise the roll card
   advertises the frame you just took out of circulation. See
-  [cover-photos.md](cover-photos.md).
+  cover photos (shipped).
 - **Share photo counts.** `openShare` computes `photoCount` from the filtered list
   (`functions/api/index.ts:313`), so the count is correct with no extra work. The
   folder's own `photoCount` should keep counting hidden photos — they are still in

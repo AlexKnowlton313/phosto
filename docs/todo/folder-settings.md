@@ -89,7 +89,7 @@ deleteFolder: (folderId: string) =>
   request<void>(`/api/folders/${folderId}`, { method: 'DELETE' }, token),
 ```
 
-`updateFolder` is the same method [cover-photos.md](cover-photos.md) needs. Build
+`updateFolder` already exists in `web/src/api.ts` — cover photos added it. Build
 it once, whichever feature lands first.
 
 ## Not in scope

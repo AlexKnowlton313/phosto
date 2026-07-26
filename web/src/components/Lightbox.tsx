@@ -10,6 +10,8 @@ interface Props {
   onDownload: (photo: PhotoView, kind: 'original' | 'raw') => void;
   /** Only supplied in the admin view; viewers never see a delete control. */
   onDelete?: (photo: PhotoView) => void;
+  /** Admin only, same as onDelete. */
+  onSetCover?: (photo: PhotoView) => void;
 }
 
 export function Lightbox({
@@ -20,6 +22,7 @@ export function Lightbox({
   onNavigate,
   onDownload,
   onDelete,
+  onSetCover,
 }: Props) {
   const photo = photos[index];
   const dialog = useRef<HTMLDivElement>(null);
@@ -116,6 +119,12 @@ export function Lightbox({
         {showNegatives && photo.hasRaw && (
           <button className="btn btn-negatives" onClick={() => onDownload(photo, 'raw')}>
             Download RAW
+          </button>
+        )}
+        {/* A photo with no derivative has no thumb.webp to use as a cover. */}
+        {onSetCover && photo.ready && (
+          <button className="btn" onClick={() => onSetCover(photo)}>
+            Set as cover
           </button>
         )}
         {onDelete && (

@@ -33,10 +33,13 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const fileInput = useRef<HTMLInputElement>(null);
 
   // The signed cookies, not the JWT, are what let the browser load images.
+  // Sequential on purpose: cover thumbnails render as soon as the folders land,
+  // so the cookie has to exist first or they 403 on a cold load.
   useEffect(() => {
-    api.startSession().catch(() => setError('Could not start an image session'));
     api
-      .listFolders()
+      .startSession()
+      .catch(() => setError('Could not start an image session'))
+      .then(() => api.listFolders())
       .then((r) => setFolders(r.folders))
       .catch((err: Error) => setError(err.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -148,6 +151,16 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     saveAs(await api.download(current.folderId, photo.photoId, kind));
   };
 
+  const setCover = async (photo: PhotoView) => {
+    if (!current) return;
+    const folder = await api.updateFolder(current.folderId, {
+      coverPhotoId: photo.photoId,
+    });
+    setCurrent(folder);
+    setFolders((prev) => prev?.map((f) => (f.folderId === folder.folderId ? folder : f)));
+    setOpenIndex(undefined);
+  };
+
   const removePhoto = async (photo: PhotoView) => {
     if (!current) return;
     if (!window.confirm(`Delete ${photo.basename}? This removes the RAW too.`)) return;
@@ -200,12 +213,22 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
             {folders?.map((folder) => (
               <button
                 key={folder.folderId}
-                className="roll"
+                className={folder.coverPhotoId ? 'roll roll-cover' : 'roll'}
                 onClick={() => openFolder(folder)}
               >
-                <div className="roll-name">{folder.name}</div>
-                <div className="roll-meta">
-                  {folder.photoCount} {folder.photoCount === 1 ? 'frame' : 'frames'}
+                {folder.coverPhotoId && (
+                  // alt="" so a deleted or moved cover collapses to the plain
+                  // tile rather than a broken-image icon. No JS fallback needed.
+                  <img
+                    src={`/f/${folder.folderId}/${folder.coverPhotoId}/thumb.webp`}
+                    alt=""
+                  />
+                )}
+                <div className="roll-text">
+                  <div className="roll-name">{folder.name}</div>
+                  <div className="roll-meta">
+                    {folder.photoCount} {folder.photoCount === 1 ? 'frame' : 'frames'}
+                  </div>
                 </div>
               </button>
             ))}
@@ -307,6 +330,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           onNavigate={setOpenIndex}
           onDownload={download}
           onDelete={removePhoto}
+          onSetCover={setCover}
         />
       )}
     </>

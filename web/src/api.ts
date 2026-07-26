@@ -29,6 +29,8 @@ export interface FolderView {
   createdAt: string;
   photoCount: number;
   rawVisibleDefault: boolean;
+  /** Derivative key is `f/<folderId>/<coverPhotoId>/thumb.webp` — no API field needed. */
+  coverPhotoId?: string;
 }
 
 export interface ShareView {
@@ -97,6 +99,13 @@ export const adminApi = (token: string) => ({
     request<FolderView>(
       '/api/folders',
       { method: 'POST', body: JSON.stringify({ name }) },
+      token,
+    ),
+
+  updateFolder: (folderId: string, patch: Partial<FolderView>) =>
+    request<FolderView>(
+      `/api/folders/${folderId}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
       token,
     ),
 
