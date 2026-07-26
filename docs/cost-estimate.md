@@ -5,6 +5,24 @@ Modelled against a real library: 417 JPEG (5.99 GB), 412 Fujifilm RAF (11.89 GB)
 prices; verify against the [AWS pricing calculator](https://calculator.aws) before
 relying on them, since list prices change.
 
+## Measured after the first import
+
+The library is now live, so these are actual bytes rather than modelled ones:
+
+| Prefix | Actual | Storage class |
+|---|---|---|
+| `orig/` originals | 6.05 GB | Standard |
+| `raw/` RAW | 11.89 GB | Standard → Glacier IR at 30 days |
+| `f/` derivatives | 0.24 GB | Standard |
+| **Total** | **18.18 GB** (2,159 objects) | |
+
+Derivatives came in at 0.24 GB against the 0.61 GB modelled below — WebP at these
+quality settings is roughly 2.5× better than the estimate assumed. So the bill runs
+slightly under projection:
+
+- **First 30 days:** ~$0.42/mo, while RAW is still in Standard.
+- **After the lifecycle transition:** ~$0.20/mo.
+
 ## The shape of the problem
 
 RAW files are **66% of the bytes and ~0% of the traffic**. Everything below follows
