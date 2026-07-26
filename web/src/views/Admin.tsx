@@ -368,9 +368,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     setBatching(true);
 
     try {
-      // The server caps a move at 25 because each photo is a transaction plus S3
-      // copies against a 15s timeout. A roll is 200 frames, so chunk to that cap
-      // rather than moving what fits and leaving the rest behind unannounced.
+      // The server caps a move at MOVE_BATCH because each photo is a transaction
+      // plus S3 copies against a 15s timeout. A roll is 200 frames, so chunk to
+      // that cap rather than moving what fits and leaving the rest unannounced.
       for (let i = 0; i < ids.length; i += MOVE_BATCH) {
         const chunk = ids.slice(i, i + MOVE_BATCH);
         setStatus(`Orphaning ${i + chunk.length} of ${ids.length} frames…`);
@@ -414,12 +414,22 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     setError(undefined);
     setBatching(true);
 
+    // Named, not counted, and for a sharper reason than the move above: the
+    // selection is cleared below either way, so a bare count would leave the
+    // owner believing frames are out of circulation that are still being served.
+    let index = 0;
     try {
       for (const photoId of ids) {
         await api.setPhotoHidden(current.folderId, photoId, hidden);
+        index += 1;
       }
     } catch (err) {
-      setError((err as Error).message);
+      const names = ids
+        .slice(index)
+        .map((id) => photos?.find((p) => p.photoId === id)?.basename ?? id);
+      setError(
+        `${(err as Error).message} — still ${hidden ? 'visible' : 'hidden'}: ${names.join(', ')}`,
+      );
     } finally {
       clear();
       setOpenIndex(undefined);
@@ -539,12 +549,16 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   return (
     <>
-      {/* The orphan roll is an ordinary folder in every way but two: it is a
+      {/* `shown`, not `photos`: the header describes the sheet under it, and
+          counting frames the sheet is deliberately numbering around would
+          advertise the ones taken out of circulation.
+
+          The orphan roll is an ordinary folder in every way but two: it is a
           fixture, so it cannot be renamed or deleted, and the server refuses
           both regardless of what this offers. */}
       <EdgeHeader
         name={current.name}
-        photos={photos ?? []}
+        photos={shown ?? []}
         onRename={current.folderId === ORPHAN_FOLDER_ID ? undefined : renameRoll}
       />
 

@@ -90,6 +90,19 @@ async function writeDerivatives(
   };
 }
 
+const deleteDerivatives = (folderId: string, photoId: string, hidden: boolean) =>
+  s3.send(
+    new DeleteObjectsCommand({
+      Bucket: BUCKET,
+      Delete: {
+        Objects: (Object.keys(DERIVATIVE_SIZES) as DerivativeName[]).map((name) => ({
+          Key: derivedKey(folderId, photoId, name, hidden),
+        })),
+        Quiet: true,
+      },
+    }),
+  );
+
 async function processRecord(record: S3EventRecord): Promise<void> {
   const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
   const parsed = parseSourceKey(key);
@@ -144,24 +157,32 @@ async function processRecord(record: S3EventRecord): Promise<void> {
   // not exist yet. Re-read and republish rather than leave a hidden frame
   // sitting at the key every share cookie can read.
   const current = await db.findPhoto(folderId, photoId);
-  if (current && Boolean(current.hidden) !== wroteHidden) {
+
+  // The same race with a different loser: the frame was deleted, or moved to
+  // another folder, while this was decoding. `pk` carries the folder, so a move
+  // reads as gone here too — and either way the sweep that removed this photo's
+  // objects ran *before* these derivatives were written, leaving bytes under a
+  // prefix no record names. That is the stranded-object state the folder-delete
+  // guard exists to catch, so take them back out rather than manufacture it.
+  // A move needs nothing more: copying the original into the new prefix
+  // retriggers this function at the destination key.
+  if (!current) {
+    console.warn('Photo record gone; discarding derivatives just written', {
+      key,
+      photoId,
+    });
+    await deleteDerivatives(folderId, photoId, wroteHidden);
+    return;
+  }
+
+  if (Boolean(current.hidden) !== wroteHidden) {
     console.warn('Hidden flag changed while deriving; relocating', {
       photoId,
       from: wroteHidden,
       to: Boolean(current.hidden),
     });
     await writeDerivatives(pipeline, folderId, photoId, Boolean(current.hidden));
-    await s3.send(
-      new DeleteObjectsCommand({
-        Bucket: BUCKET,
-        Delete: {
-          Objects: (Object.keys(DERIVATIVE_SIZES) as DerivativeName[]).map((name) => ({
-            Key: derivedKey(folderId, photoId, name, wroteHidden),
-          })),
-          Quiet: true,
-        },
-      }),
-    );
+    await deleteDerivatives(folderId, photoId, wroteHidden);
   }
 
   const patch: Partial<Photo> = {

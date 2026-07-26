@@ -464,9 +464,16 @@ function handler(event) {
     apiFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['cloudfront:CreateInvalidation'],
-        // Wildcard for the same cycle reason: naming the distribution's ARN here
-        // would make the function's role depend on the distribution.
-        resources: ['*'],
+        // Every distribution in the account, not `*`: the cycle argument says
+        // only that this role cannot name *this* distribution's id, and an
+        // account-scoped ARN pattern is built from `this.account` alone, which
+        // is downstream of nothing.
+        resources: [
+          cdk.Arn.format(
+            { service: 'cloudfront', region: '', resource: 'distribution', resourceName: '*' },
+            this,
+          ),
+        ],
       }),
     );
 

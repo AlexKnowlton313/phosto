@@ -222,19 +222,44 @@ export async function findPhoto(
   return ((res.Items ?? [])[0] as Photo) ?? null;
 }
 
+/**
+ * Returns false when the record is no longer there — deleted, or moved to another
+ * folder, since `pk` carries the folder.
+ *
+ * The condition is the whole point. UpdateItem *upserts*, and every caller here
+ * holds an item it read earlier: derive reads the photo, then spends seconds
+ * decoding a RAF. Delete the frame in that window and an unguarded update
+ * recreates the row from its key plus the patch — no `photoId`, no `basename`,
+ * no `folderId`. `listPhotos` returns it because the sort key still matches,
+ * the grid renders `/f/undefined/undefined/thumb.webp`, and `findPhoto` filters
+ * on `photoId` so no route can delete it again. `updateFolder` has always
+ * carried this; the photo version did not.
+ */
 export async function updatePhoto(
   photo: Photo,
   patch: Partial<Photo>,
-): Promise<void> {
-  if (!hasPatch(patch)) return;
+): Promise<boolean> {
+  if (!hasPatch(patch)) return true;
 
-  await ddb.send(
-    new UpdateCommand({
-      TableName: TABLE,
-      Key: { pk: folderPk(photo.folderId), sk: photoSk(photo.uploadedAt, photo.photoId) },
-      ...setExpression(patch),
-    }),
-  );
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: { pk: folderPk(photo.folderId), sk: photoSk(photo.uploadedAt, photo.photoId) },
+        ...setExpression(patch),
+        ConditionExpression: 'attribute_exists(pk)',
+      }),
+    );
+    return true;
+  } catch (err) {
+    if ((err as Error).name !== 'ConditionalCheckFailedException') throw err;
+    console.warn('Photo record vanished before its update landed', {
+      folderId: photo.folderId,
+      photoId: photo.photoId,
+      patch: Object.keys(patch),
+    });
+    return false;
+  }
 }
 
 /**

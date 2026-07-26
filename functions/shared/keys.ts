@@ -9,8 +9,9 @@ export const PREFIX_RAW = process.env.PREFIX_RAW ?? 'raw/';
  * enforcement: a share cookie is signed for `f/<folderId>/*` and the literal
  * prefix diverges before the wildcard, so no share on that folder can reach a
  * hidden frame — including cookies already sitting in a browser. The admin
- * cookie covers `f/*` and so still reaches both. `folderId` is a UUID, so the
- * segment cannot collide with a real folder.
+ * cookie covers `f/*` and so still reaches both. Folder ids are server-minted,
+ * either `randomUUID()` or the one literal `orphaned`, so nothing can collide
+ * with this segment.
  */
 export const derivedKey = (
   folderId: string,

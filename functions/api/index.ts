@@ -245,6 +245,26 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
   return json(200, { uploads });
 }
 
+/**
+ * The share page and its og:image come out of this Lambda and are cached at the
+ * edge for `PREVIEW_TTL` with no cookie involved. A cover that has just stopped
+ * being viewable — hidden, moved, deleted — therefore keeps unfurling at 2400px
+ * until that expires, through a route that never looks at the photo record.
+ *
+ * `/s/*` rather than the two exact URLs: the path carries the plaintext token
+ * and only its SHA-256 is stored, so they cannot be reconstructed. CloudFront
+ * bills a wildcard as one path either way.
+ */
+const invalidatePreviews = () => invalidate(['/s/*']);
+
+/** Drops the roll's cover if this photo is it. True when it actually cleared. */
+async function clearCoverIfSet(folderId: string, photoId: string): Promise<boolean> {
+  const folder = await db.getFolder(folderId);
+  if (folder?.coverPhotoId !== photoId) return false;
+  await db.clearCover(folderId);
+  return true;
+}
+
 /** Every object a photo owns under one folder — what delete removes and what a
  * move leaves behind at the source. */
 const photoObjectKeys = (folderId: string, photo: Photo) => [
@@ -269,18 +289,59 @@ const photoObjectKeys = (folderId: string, photo: Photo) => [
   ...(photo.rawExt ? [rawKey(folderId, photo.photoId, photo.rawExt)] : []),
 ];
 
-async function deletePhotoAndObjects(folderId: string, photoId: string) {
-  const photo = await db.findPhoto(folderId, photoId);
-  if (!photo) throw new HttpError(404, 'Photo not found');
-
-  const keys = photoObjectKeys(folderId, photo);
-
-  await s3.send(
+/**
+ * Removes objects and drops them from the edge, together, because they are the
+ * same operation seen from two places.
+ *
+ * Two things were learned once each and then not applied to the other callers.
+ * `DeleteObjects` reports per-key failures in the *response* rather than by
+ * throwing, so an unchecked partial delete returns success on a frame that is
+ * still fully readable. And derivatives carry `immutable, max-age=1y`, so
+ * removing the object at the origin does not stop a POP serving the copy it
+ * already has — while a share cookie scoped to `f/<folderId>/*` keeps covering
+ * that URL, and reopening the link mints a fresh one. Hiding, moving out of a
+ * shared roll and deleting are all the same read at the edge.
+ *
+ * Invalidation runs after the check, and is best-effort inside `invalidate`:
+ * the bytes are the durable half, and failing a request that mostly succeeded
+ * only makes the operator retry a delete that already happened.
+ *
+ * Only the derivative keys are invalidated, collapsed to one wildcard per photo
+ * directory. Originals and RAWs are left out because they are reached by a
+ * five-minute signed URL minted for someone already authorised, so a POP copy
+ * is not the leak — and `f/<folder>/<photo>/*` costs one path against
+ * CloudFront's 1000-a-month free allowance where the four keys under it would
+ * cost four. That difference is what orphaning a 200-frame roll turns on.
+ */
+async function deleteObjects(keys: string[], what: string) {
+  const res = await s3.send(
     new DeleteObjectsCommand({
       Bucket: BUCKET,
       Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
     }),
   );
+  if (res.Errors?.length) {
+    throw new HttpError(500, `Could not remove ${res.Errors.length} ${what}; retry`);
+  }
+
+  const dirs = new Set(
+    keys
+      .filter((key) => key.startsWith(PREFIX_DERIVED))
+      .map((key) => `/${key.replace(/[^/]+$/, '')}*`),
+  );
+  await invalidate([...dirs]);
+}
+
+async function deletePhotoAndObjects(folderId: string, photoId: string) {
+  const photo = await db.findPhoto(folderId, photoId);
+  if (!photo) throw new HttpError(404, 'Photo not found');
+
+  // Before the objects, for the same reason `setPhotoHidden` clears it first: a
+  // cover is streamed cookie-free through `/s/<token>/og.webp`, and a throw
+  // below must not leave the roll advertising a frame that is on its way out.
+  if (await clearCoverIfSet(folderId, photoId)) await invalidatePreviews();
+
+  await deleteObjects(photoObjectKeys(folderId, photo), 'object(s)');
   await db.deletePhoto(photo);
   await db.bumpPhotoCount(folderId, -1);
 
@@ -357,13 +418,12 @@ async function movePhotoAndObjects(
   }
 
   const stale = photoObjectKeys(source.folderId, photo);
-  await s3.send(
-    new DeleteObjectsCommand({
-      Bucket: BUCKET,
-      Delete: { Objects: stale.map((Key) => ({ Key })), Quiet: true },
-    }),
-  );
+  await deleteObjects(stale, 'source object(s)');
   console.log('Deleted source objects', { photoId, keys: stale, to: toFolderId });
+
+  // The transaction above drops the cover when the moved frame was it, so the
+  // roll's link preview is now pointing at a folder that no longer holds it.
+  if (source.coverPhotoId === photoId) await invalidatePreviews();
 }
 
 /**
@@ -401,8 +461,9 @@ async function setPhotoHidden(
 
   // Before the S3 work, not after. `shareCover` streams the cover through
   // `/s/<token>/og.webp` with no cookie at all, so a throw further down must not
-  // leave a hidden frame still named as the roll's cover.
-  if (hidden && folder.coverPhotoId === photoId) await db.clearCover(folderId);
+  // leave a hidden frame still named as the roll's cover. Clearing the record is
+  // not enough on its own — that response is edge-cached, hence the second call.
+  if (hidden && (await clearCoverIfSet(folderId, photoId))) await invalidatePreviews();
 
   // Deliberately not guarded on the flag actually changing. Every step below is
   // idempotent, and a retry is the only repair available when a previous attempt
@@ -436,25 +497,9 @@ async function setPhotoHidden(
     stale.push(`${PREFIX_DERIVED}${folderId}/${photoId}/medium.webp`);
   }
 
-  const deleted = await s3.send(
-    new DeleteObjectsCommand({
-      Bucket: BUCKET,
-      Delete: { Objects: stale.map((Key) => ({ Key })), Quiet: true },
-    }),
-  );
-  // Quiet mode still reports per-key failures, and it reports them in the
-  // response rather than by throwing. Unchecked, a delete that left large.webp
-  // behind would return 200 on a frame that is still fully readable by a share.
-  if (deleted.Errors?.length) {
-    throw new HttpError(
-      500,
-      `Could not remove ${deleted.Errors.length} old derivative(s); retry`,
-    );
-  }
-
-  // The bytes are gone from the origin, but a POP that cached the old URL will
-  // keep serving it for a year. For hiding, that cached copy *is* the leak.
-  await invalidate(stale.map((key) => `/${key}`));
+  // Checks the per-key failures and invalidates in one place; for hiding, the
+  // cached copy at the edge *is* the leak.
+  await deleteObjects(stale, 'old derivative(s)');
 
   console.log('Photo hidden flag set', { photoId, folderId, hidden, stale });
 

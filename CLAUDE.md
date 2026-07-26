@@ -90,6 +90,25 @@ cache: `immutable` means their open tab may never revalidate. Hiding revokes the
 frame for everyone they forwarded the link to, not for the person who already had
 it open.
 
+**That reasoning is not specific to hiding, and neither is the code any more.**
+Moving a frame out of a shared roll and deleting one leave the same cached copy
+behind the same still-valid cookie, so all three removals go through
+`deleteObjects()` in `functions/api/index.ts` — never a bare
+`DeleteObjectsCommand`. It does two things no caller should repeat: checks
+`Errors` in the *response*, because `DeleteObjects` reports per-key failures
+there rather than throwing and an unchecked partial delete returns success on a
+frame that is still readable; and invalidates, collapsed to one
+`/f/<folder>/<photo>/*` wildcard per photo rather than one path per key, which
+is what keeps orphaning a 200-frame roll inside CloudFront's free 1000
+paths/month.
+
+The cover is a third route to the same bytes: `/s/<token>/og.webp` streams it at
+2400px with **no cookie at all** and is edge-cached for `PREVIEW_TTL`, so
+clearing `coverPhotoId` in DynamoDB does not stop it unfurling. Anything that
+drops a cover calls `invalidatePreviews()` too. It invalidates `/s/*` rather
+than the exact URLs because the path carries the plaintext token and only its
+SHA-256 is stored — the URLs cannot be reconstructed.
+
 Verify access control with a canary rather than by reading the config: upload an
 object with known bytes under `f/` and confirm an unsigned fetch does not return
 them.
@@ -176,6 +195,19 @@ the index.
   share instead of leaving an orphan.
 - **`vite.config.ts` needs `define: { global: 'globalThis' }`** for
   `amazon-cognito-identity-js`, which otherwise builds clean and throws at runtime.
+- **DynamoDB `UpdateItem` upserts, so `updatePhoto` carries
+  `attribute_exists(pk)`.** Every caller holds an item it read earlier, and
+  derive reads the photo and then spends *seconds* decoding a RAF. Delete the
+  frame in that window and an unguarded update recreates the row from its key
+  plus the patch: no `photoId`, no `basename`, no `folderId`. `listPhotos`
+  returns it because the sort key still matches, the grid renders
+  `/f/undefined/undefined/thumb.webp`, and `findPhoto` filters on `photoId`, so
+  no route can delete it again. It returns `false` instead of throwing —
+  the record being gone is a race, not a failure. Derive pairs that with a
+  re-read after `writeDerivatives`: a `null` there means deleted *or* moved
+  (`pk` carries the folder), and the derivatives it just wrote landed after the
+  sweep that was meant to remove them, so it deletes them rather than strand
+  them under a prefix no record names.
 
 ## Data model
 
