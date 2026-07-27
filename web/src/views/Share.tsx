@@ -1,13 +1,8 @@
 import { useEffect, useState } from 'react';
 import { saveAs, shareApi, type ShareView } from '../api';
-import {
-  ContactSheet,
-  EdgeHeader,
-  selectable,
-  SkeletonSheet,
-  useSelection,
-} from '../components/ContactSheet';
+import { ContactSheet, EdgeHeader, SkeletonSheet } from '../components/ContactSheet';
 import { Lightbox } from '../components/Lightbox';
+import { selectable, useSelection } from '../components/selection';
 
 export function Share({ token }: { token: string }) {
   const [data, setData] = useState<ShareView>();
@@ -94,12 +89,17 @@ export function Share({ token }: { token: string }) {
         <div className="toolbar toolbar-footer">
           <span className="note">{selected.size} selected</span>
           {data.permissions.allowDownload && downloadable.length > 0 && (
-            <button className="btn" disabled={batching} onClick={downloadSelected}>
+            <button
+              type="button"
+              className="btn"
+              disabled={batching}
+              onClick={downloadSelected}
+            >
               Download JPEGs
             </button>
           )}
           <div className="spacer" />
-          <button className="btn" onClick={clear}>
+          <button type="button" className="btn" onClick={clear}>
             Clear
           </button>
         </div>

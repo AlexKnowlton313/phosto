@@ -18,8 +18,12 @@ type Ask =
  * pointer and focus but keydown still reaches window listeners, so one Escape
  * would cancel the dialog *and* clear the selection or close the lightbox under
  * it. Queried from the DOM rather than passed around: any dialog counts.
+ *
+ * `.modal` and not every `dialog[open]`: the lightbox is one too, and it must
+ * not report itself as the thing holding the keyboard — its own arrow keys are
+ * behind this check.
  */
-export const modalOpen = () => Boolean(document.querySelector('dialog[open]'));
+export const modalOpen = () => Boolean(document.querySelector('dialog.modal[open]'));
 
 /**
  * The three questions this app asks — confirm, prompt, pick a roll — in one
@@ -63,21 +67,25 @@ export function useDialog() {
     if (!ask || !el) return;
     el.showModal();
     const cancel = () => answer(ask.kind === 'confirm' ? false : null);
+    // The backdrop is part of the dialog element, so a click that lands on the
+    // element itself rather than on the panel inside it is a click outside.
+    // Listened for here rather than as a JSX onClick: a <dialog> is not an
+    // interactive element, and a click handler on one is invisible to anything
+    // that is not a mouse.
+    const outside = (event: MouseEvent) => {
+      if (event.target === el) el.close();
+    };
     el.addEventListener('close', cancel);
-    return () => el.removeEventListener('close', cancel);
+    el.addEventListener('click', outside);
+    return () => {
+      el.removeEventListener('close', cancel);
+      el.removeEventListener('click', outside);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ask]);
 
   const dialog = ask && (
-    <dialog
-      className="modal"
-      ref={node}
-      // The backdrop is part of the dialog element, so a click that lands on the
-      // element itself rather than on the panel inside it is a click outside.
-      onClick={(e) => {
-        if (e.target === node.current) node.current?.close();
-      }}
-    >
+    <dialog className="modal" ref={node} aria-label={ask.title}>
       <form
         className="modal-body"
         onSubmit={(e) => {
@@ -92,6 +100,9 @@ export function useDialog() {
           <input
             type="text"
             autoFocus
+            // The title is the question, so it is also this field's label; a
+            // visible <label> would repeat it a line lower.
+            aria-label={ask.title}
             value={text}
             onChange={(e) => setText(e.target.value)}
           />

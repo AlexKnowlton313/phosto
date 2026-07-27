@@ -1,6 +1,25 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { PhotoView } from '../api';
 import { modalOpen } from './Dialog';
+
+type View = { scale: number; x: number; y: number };
+
+const UNZOOMED: View = { scale: 1, x: 0, y: 0 };
+
+/**
+ * Zoom lives in a ref and is written straight to the img, not held in state.
+ *
+ * Clamping a pan means measuring the element being transformed, so as a state
+ * updater this was not a function of its argument at all — it read the DOM, and
+ * an updater React may call more than once, whenever it likes, has to be pure.
+ * Nothing renders off the zoom either, so it was never data: it is a paint, and
+ * as one it also stops a wheel gesture re-rendering the frame at 60Hz.
+ */
+const paint = (img: HTMLImageElement | null, v: View) => {
+  if (!img) return;
+  img.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.scale})`;
+  img.style.cursor = v.scale > 1 ? 'grab' : '';
+};
 
 interface Props {
   photos: PhotoView[];
@@ -24,12 +43,34 @@ export function Lightbox({
   onSetCover,
 }: Props) {
   const photo = photos[index];
-  const dialog = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
   const stage = useRef<HTMLDivElement>(null);
 
-  /** Zoom state, as a transform on the img: `translate(x, y) scale(scale)`. */
-  const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
-  useEffect(() => setView({ scale: 1, x: 0, y: 0 }), [index]);
+  /** Current zoom, as a transform on the img: `translate(x, y) scale(scale)`. */
+  const view = useRef<View>(UNZOOMED);
+
+  // A new frame arrives in the same <img>, so the transform outlives its
+  // subject unless it is cleared here.
+  useEffect(() => {
+    view.current = UNZOOMED;
+    paint(stage.current?.querySelector('img') ?? null, UNZOOMED);
+  }, [index]);
+
+  // Native modal: the top layer is what puts this over the sheet without a
+  // z-index argument, and Esc closing it comes from the platform.
+  useEffect(() => {
+    dialog.current?.showModal();
+  }, []);
+
+  // Esc and a backdrop click both close the element without telling React, so
+  // the state that mounted it has to follow the DOM back down.
+  useEffect(() => {
+    const el = dialog.current;
+    if (!el) return;
+    const closed = () => onClose();
+    el.addEventListener('close', closed);
+    return () => el.removeEventListener('close', closed);
+  }, [onClose]);
 
   // The overlay covers the sheet but does not stop it scrolling underneath.
   useEffect(() => {
@@ -51,7 +92,6 @@ export function Lightbox({
     // zoom actually created, and centre whichever axis has none. offsetWidth is
     // the layout size, unlike getBoundingClientRect, which already has the
     // transform we are computing baked in.
-    type View = { scale: number; x: number; y: number };
     const contain = (v: View): View => {
       const img = node.querySelector('img');
       if (!img) return v;
@@ -64,19 +104,24 @@ export function Lightbox({
       };
     };
 
+    const show = (next: View) => {
+      view.current = next;
+      paint(node.querySelector('img'), next);
+    };
+
     // Zoom about a screen point, keeping whatever is under it under it: with
     // `translate(x) scale(s)` about the centre, a content point sits at
     // p = x + s·c, so holding p fixed across s → s·k gives x' = p − k(p − x).
-    const zoomAbout = (factor: number, clientX: number, clientY: number) =>
-      setView((v) => {
-        const scale = Math.min(Math.max(v.scale * factor, 1), 6);
-        if (scale === 1) return { scale: 1, x: 0, y: 0 };
-        const k = scale / v.scale;
-        const box = node.getBoundingClientRect();
-        const px = clientX - box.left - box.width / 2;
-        const py = clientY - box.top - box.height / 2;
-        return contain({ scale, x: px - k * (px - v.x), y: py - k * (py - v.y) });
-      });
+    const zoomAbout = (factor: number, clientX: number, clientY: number) => {
+      const v = view.current;
+      const scale = Math.min(Math.max(v.scale * factor, 1), 6);
+      if (scale === 1) return show(UNZOOMED);
+      const k = scale / v.scale;
+      const box = node.getBoundingClientRect();
+      const px = clientX - box.left - box.width / 2;
+      const py = clientY - box.top - box.height / 2;
+      show(contain({ scale, x: px - k * (px - v.x), y: py - k * (py - v.y) }));
+    };
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
@@ -107,15 +152,14 @@ export function Lightbox({
         const next = spreadOf(a, b);
         if (spread > 0) zoomAbout(next / spread, (a.x + b.x) / 2, (a.y + b.y) / 2);
         spread = next;
-      } else {
-        setView((v) =>
-          v.scale === 1
-            ? v
-            : contain({
-                ...v,
-                x: v.x + event.clientX - previous.x,
-                y: v.y + event.clientY - previous.y,
-              }),
+      } else if (view.current.scale > 1) {
+        const v = view.current;
+        show(
+          contain({
+            ...v,
+            x: v.x + event.clientX - previous.x,
+            y: v.y + event.clientY - previous.y,
+          }),
         );
       }
     };
@@ -156,14 +200,15 @@ export function Lightbox({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       // A confirm dialog opened from here owns the keyboard until it is answered.
+      // Escape is not here: the dialog element cancels itself, and the `close`
+      // listener above is what tells React about it.
       if (modalOpen()) return;
-      if (event.key === 'Escape') onClose();
       if (event.key === 'ArrowRight') onNavigate(Math.min(index + 1, photos.length - 1));
       if (event.key === 'ArrowLeft') onNavigate(Math.max(index - 1, 0));
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [index, photos.length, onClose, onNavigate]);
+  }, [index, photos.length, onNavigate]);
 
   // Warm the neighbours so arrowing through the roll does not flash empty.
   useEffect(() => {
@@ -184,14 +229,7 @@ export function Lightbox({
   ].filter(Boolean) as string[];
 
   return (
-    <div
-      className="lightbox"
-      role="dialog"
-      aria-modal="true"
-      aria-label={photo.basename}
-      ref={dialog}
-      tabIndex={-1}
-    >
+    <dialog className="lightbox" aria-label={photo.basename} ref={dialog} tabIndex={-1}>
       <div className="lightbox-stage" ref={stage}>
         <img
           src={photo.urls.large}
@@ -199,14 +237,11 @@ export function Lightbox({
           /* A mouse drag on an img starts native drag-and-drop, which cancels
              the pointer stream a few pixels in and kills panning. */
           draggable={false}
-          style={{
-            transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
-            cursor: view.scale > 1 ? 'grab' : undefined,
-          }}
         />
 
         {index > 0 && (
           <button
+            type="button"
             className="lightbox-nav prev"
             onClick={() => onNavigate(index - 1)}
             aria-label="Previous frame"
@@ -216,6 +251,7 @@ export function Lightbox({
         )}
         {index < photos.length - 1 && (
           <button
+            type="button"
             className="lightbox-nav next"
             onClick={() => onNavigate(index + 1)}
             aria-label="Next frame"
@@ -242,31 +278,37 @@ export function Lightbox({
         <div className="spacer" />
 
         {photo.canDownload && (
-          <button className="btn" onClick={() => onDownload(photo, 'original')}>
+          <button type="button" className="btn" onClick={() => onDownload(photo, 'original')}>
             Download JPEG
           </button>
         )}
         {/* The API zeroes hasRaw on a share, so only the owner ever sees this. */}
         {photo.hasRaw && (
-          <button className="btn btn-negatives" onClick={() => onDownload(photo, 'raw')}>
+          <button
+            type="button"
+            className="btn btn-negatives"
+            onClick={() => onDownload(photo, 'raw')}
+          >
             Download RAW
           </button>
         )}
         {/* A photo with no derivative has no thumb.webp to use as a cover. */}
         {onSetCover && photo.ready && (
-          <button className="btn" onClick={() => onSetCover(photo)}>
+          <button type="button" className="btn" onClick={() => onSetCover(photo)}>
             Set as cover
           </button>
         )}
         {onDelete && (
-          <button className="btn btn-danger" onClick={() => onDelete(photo)}>
+          <button type="button" className="btn btn-danger" onClick={() => onDelete(photo)}>
             Delete
           </button>
         )}
-        <button className="btn" onClick={onClose}>
+        {/* close() rather than onClose(), so every way out of here — button,
+            Esc, backdrop — leaves through the same `close` event. */}
+        <button type="button" className="btn" onClick={() => dialog.current?.close()}>
           Close
         </button>
       </div>
-    </div>
+    </dialog>
   );
 }

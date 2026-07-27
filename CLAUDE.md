@@ -35,6 +35,12 @@ looking for one, and don't imply coverage that doesn't exist. The verification l
 is `npm run typecheck`, then `npm run diff` to read the CloudFormation change, then
 the access-control canary described below.
 
+`npx react-doctor` lints `web/` and currently scores 100. `doctor.config.mjs`
+turns off exactly one rule, `async-await-in-loop`, and says why in the file: both
+sequential loops here are sequential on purpose — one because concurrent deletes
+contend on a roll's `photoCount` in DynamoDB, the other because browsers drop a
+burst of programmatic downloads. Read that comment before adding a second entry.
+
 `functions/layers/*/nodejs/` is gitignored and CDK reads it with `Code.fromAsset`,
 so a bare `npx cdk synth`/`deploy` on a fresh clone fails until `npm run
 build:layer` has run. `npm run deploy` does it first. The sharp version is pinned
@@ -330,6 +336,15 @@ what hid the `max-height` bug the landmines list names.
 Cognito, so a share viewer never loads the auth path; everything else is the admin
 UI behind sign-in.
 
+`Admin.tsx` is a shell and holds only the folder list and which roll is open
+(`location.hash`, read through `useSyncExternalStore`). Everything else belongs
+to one of two views it picks between — `RollIndex` (the roll tiles, sign-out, and
+the app's only upload) or `RollView` (one contact sheet), with `SharePanel` and
+`SelectionBar` under the latter. **`RollView` is mounted per roll** —
+`key={folderId}` — so leaving a roll throws its sheet, selection, open frame and
+status line away instead of unsetting them one at a time; there is no
+folder-changed reset effect to keep in step with the state it resets.
+
 The admin is folder-first with **All photos** as the first entry in the roll list.
 That entry is a pseudo-roll: `LIBRARY_ID` (`'all'`) is not a folder id the server
 knows, so `Admin.tsx` synthesises a `FolderView` for it and `isLibrary` gates
@@ -349,12 +364,22 @@ Every question the admin asks goes through `useDialog()`
 trap, Esc and the top layer come from the platform and it needs no z-index to
 sit over the lightbox. No `window.confirm`/`prompt` anywhere: they cannot be
 styled, and — the part that bit — a `showModal()` dialog does *not* stop keydown
-reaching window listeners the way `confirm()` froze the page, so both Escape
-handlers (`Lightbox`, `useSelection`) check `modalOpen()` or one Escape cancels
-the dialog *and* clears the selection under it.
+reaching window listeners the way `confirm()` froze the page, so the window
+handlers (`Lightbox`'s arrows, `useSelection`'s Escape) check `modalOpen()` or
+one Escape cancels the dialog *and* clears the selection under it.
 
-Selection actions live in `.toolbar-footer`, a sticky bar at the foot of the
-sheet, not in the roll toolbar — they act on the selection, not the roll. It is
+The lightbox is a `<dialog>` too, which is why `modalOpen()` matches
+`dialog.modal[open]` and not every open dialog — it must not report *itself* as
+the thing holding the keyboard, or its own arrow keys sit behind that check. It
+never closes itself directly: the button calls `close()`, and a single `close`
+listener is what tells React, so Esc, the button and the backdrop all leave the
+same way. Its CSS undoes the UA's dialog box — border, padding, auto margins and
+a `fit-content` size that would otherwise shrink the overlay to the image.
+
+Selection actions live in `SelectionBar` (`.toolbar-footer`), a sticky bar at the
+foot of the sheet, not in the roll toolbar — they act on the selection, not the
+roll. `batching` is owned by `RollView` and passed down, so the roll toolbar
+greys out with the bar: leaving the roll mid-delete is not on offer. It is
 sticky rather than fixed so it reserves its own space and cannot cover the last
 row, which is why `#root` is `min-height: 100%` and not `height`: a sticky
 element is clamped to its containing block, and a 100vh-tall root would let the

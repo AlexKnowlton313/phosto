@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { PhotoView } from '../api';
-import { modalOpen } from './Dialog';
 
 interface Props {
   photos: PhotoView[];
@@ -8,64 +7,6 @@ interface Props {
   onOpen: (index: number) => void;
   onToggle: (photoId: string) => void;
 }
-
-/**
- * Frame selection, keyed by photoId. The first selection *is* the mode — there is
- * no toolbar switch — so both views need the same escape hatch back out of it.
- */
-export function useSelection() {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-
-  const toggle = useCallback((photoId: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(photoId)) next.add(photoId);
-      return next;
-    });
-  }, []);
-
-  // Returning `prev` when already empty matters: this fires on every Escape in
-  // the app, including the one that closes the lightbox, and a fresh Set there
-  // would re-render the whole sheet for nothing.
-  const clear = useCallback(
-    () => setSelected((prev) => (prev.size ? new Set() : prev)),
-    [],
-  );
-
-  /** Drops ids that are no longer on the sheet, e.g. after a photo is deleted. */
-  const retain = useCallback((photoIds: string[]) => {
-    setSelected((prev) => {
-      const next = new Set([...prev].filter((id) => photoIds.includes(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, []);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      // Escape belongs to an open dialog — cancelling one must not also drop the
-      // selection it was asking about.
-      if (event.key === 'Escape' && !modalOpen()) clear();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [clear]);
-
-  return { selected, toggle, clear, retain };
-}
-
-/**
- * The selected photos a batch download can actually fetch, in sheet order. A
- * RAW-only frame has no `orig/` object and so no `canDownload`; both views gate
- * their buttons on this being non-empty so neither offers a no-op.
- */
-export const selectable = (
-  photos: PhotoView[],
-  selected: Set<string>,
-  kind: 'original' | 'raw',
-) =>
-  photos.filter(
-    (p) => selected.has(p.photoId) && (kind === 'raw' ? p.hasRaw : p.canDownload),
-  );
 
 function Frame({
   photo,
@@ -93,6 +34,7 @@ function Frame({
     // are centre-cropped here and shown whole in the lightbox.
     <div className="cell">
       <button
+        type="button"
         className={`frame${selected ? ' frame-selected' : ''}`}
         onClick={selecting ? onToggle : onOpen}
         // Only a toggle while the mode is on; outside it this button opens a
@@ -119,6 +61,7 @@ function Frame({
       {/* A sibling rather than a child: the frame is already a button and one
           cannot nest another, and this is the only way *into* selection mode. */}
       <button
+        type="button"
         className="frame-check"
         onClick={onToggle}
         aria-pressed={selected}
@@ -179,6 +122,13 @@ export function SkeletonSheet() {
   );
 }
 
+const dayMonth = (iso: string) =>
+  new Date(iso).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+
 /**
  * The film edge-marking header. Everything on the data line is read off the
  * photos themselves, so it describes the actual roll rather than restating the
@@ -195,27 +145,19 @@ export function EdgeHeader({
    * same pattern as Lightbox's onDelete. A share viewer never sees it. */
   onRename?: () => void;
 }) {
-  const dates = photos
-    .map((p) => p.takenAt)
-    .filter(Boolean)
-    .sort();
-
-  const format = (iso: string) =>
-    new Date(iso).toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
+  // flatMap over map+filter: an undefined takenAt drops out as an empty slot
+  // rather than surviving into the sort as a falsy string.
+  const dates = photos.flatMap((p) => p.takenAt ?? []).sort();
 
   const range =
     dates.length === 0
       ? null
-      : format(dates[0]) === format(dates[dates.length - 1])
-        ? format(dates[0])
-        : `${format(dates[0])} to ${format(dates[dates.length - 1])}`;
+      : dayMonth(dates[0]) === dayMonth(dates[dates.length - 1])
+        ? dayMonth(dates[0])
+        : `${dayMonth(dates[0])} to ${dayMonth(dates[dates.length - 1])}`;
 
   // A roll is usually one body; only name it when that is actually true.
-  const cameras = [...new Set(photos.map((p) => p.camera).filter(Boolean))];
+  const cameras = [...new Set(photos.flatMap((p) => p.camera ?? []))];
   const rawCount = photos.filter((p) => p.hasRaw).length;
 
   return (
@@ -223,7 +165,7 @@ export function EdgeHeader({
       <h1 className="edge-name">
         {name}
         {onRename && (
-          <button className="edge-rename" onClick={onRename}>
+          <button type="button" className="edge-rename" onClick={onRename}>
             Rename
           </button>
         )}

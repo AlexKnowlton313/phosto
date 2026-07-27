@@ -391,10 +391,23 @@ button {
 
 /* ------------------------------------------------------------------ lightbox */
 
+/*
+ * A native <dialog>, opened with showModal(): the top layer is what puts it over
+ * the sheet, so it needs no z-index, and Esc is the platform's. Everything below
+ * the background is undoing the UA's own dialog box — border, padding, auto
+ * margins and a fit-content size that would otherwise shrink it to the image.
+ */
 .lightbox {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
   background: rgba(10, 11, 13, 0.97);
   display: grid;
   grid-template-rows: 1fr auto;

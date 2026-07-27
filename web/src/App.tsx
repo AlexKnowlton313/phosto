@@ -19,13 +19,24 @@ export function App() {
   const token$ = shareToken();
 
   useEffect(() => {
+    // Guarded because both settles land after an await: a token$ change swaps the
+    // effect mid-flight and the stale run must not overwrite the new one's state.
+    let live = true;
     loadConfig()
       .then(async (loaded) => {
-        setConfig(loaded);
         // A share viewer never needs Cognito, so don't make them wait on it.
-        setToken(token$ ? null : await currentToken(loaded));
+        const next = token$ ? null : await currentToken(loaded);
+        if (live) {
+          setConfig(loaded);
+          setToken(next);
+        }
       })
-      .catch(() => setFailed(true));
+      .catch(() => {
+        if (live) setFailed(true);
+      });
+    return () => {
+      live = false;
+    };
   }, [token$]);
 
   if (token$) return <Share token={token$} />;

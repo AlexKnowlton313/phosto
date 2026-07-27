@@ -226,6 +226,9 @@ export const adminApi = (token: string) => ({
     request<void>(`/api/folders/${folderId}/shares/${id}`, { method: 'DELETE' }, token),
 });
 
+/** The bound admin client, for the views that take one as a prop. */
+export type AdminApi = ReturnType<typeof adminApi>;
+
 // ----------------------------------------------------------------- public API
 
 export const shareApi = {
