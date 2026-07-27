@@ -51,9 +51,7 @@ async function loadDecodableBytes(
 
 async function writeDerivatives(
   pipeline: sharp.Sharp,
-  folderId: string,
   photoId: string,
-  hidden: boolean,
 ): Promise<{ width?: number; height?: number }> {
   const metadata = await pipeline.metadata();
 
@@ -73,7 +71,7 @@ async function writeDerivatives(
       await s3.send(
         new PutObjectCommand({
           Bucket: BUCKET,
-          Key: derivedKey(folderId, photoId, name, hidden),
+          Key: derivedKey(photoId, name),
           Body: body,
           ContentType: 'image/webp',
           CacheControl: CACHE_CONTROL,
@@ -90,13 +88,13 @@ async function writeDerivatives(
   };
 }
 
-const deleteDerivatives = (folderId: string, photoId: string, hidden: boolean) =>
+const deleteDerivatives = (photoId: string) =>
   s3.send(
     new DeleteObjectsCommand({
       Bucket: BUCKET,
       Delete: {
         Objects: (Object.keys(DERIVATIVE_SIZES) as DerivativeName[]).map((name) => ({
-          Key: derivedKey(folderId, photoId, name, hidden),
+          Key: derivedKey(photoId, name),
         })),
         Quiet: true,
       },
@@ -112,9 +110,9 @@ async function processRecord(record: S3EventRecord): Promise<void> {
     return;
   }
 
-  const { folderId, photoId, ext, isRaw } = parsed;
+  const { photoId, ext, isRaw } = parsed;
 
-  const photo = await db.findPhoto(folderId, photoId);
+  const photo = await db.getPhoto(photoId);
   if (!photo) {
     console.warn('No photo record for object; skipping', { key });
     return;
@@ -129,7 +127,7 @@ async function processRecord(record: S3EventRecord): Promise<void> {
 
   const source = await loadDecodableBytes(key, ext, isRaw);
   if (!source) {
-    await db.updatePhoto(photo, { rawBytes: record.s3.object.size });
+    await db.updatePhoto(photoId, { rawBytes: record.s3.object.size });
     return;
   }
 
@@ -144,45 +142,25 @@ async function processRecord(record: S3EventRecord): Promise<void> {
     .catch(() => undefined);
 
   const exif = readExif(metadata?.exif);
-  // Re-deriving a hidden photo — a repair copy, or the copy a move makes into the
-  // new folder — must land back under `f/hidden/`, or it silently republishes the
-  // frame at the key every share cookie can read.
-  const wroteHidden = Boolean(photo.hidden);
-  const { width, height } = await writeDerivatives(pipeline, folderId, photoId, wroteHidden);
+  const { width, height } = await writeDerivatives(pipeline, photoId);
 
-  // The flag was read before decoding, and decoding a HEIC or a RAF takes
-  // seconds while a PATCH takes milliseconds — so "hide the bad frame as soon as
-  // it appears" reliably flips it mid-job. Whoever wrote last has to reconcile,
-  // and the API's own copy step found nothing to move because these objects did
-  // not exist yet. Re-read and republish rather than leave a hidden frame
-  // sitting at the key every share cookie can read.
-  const current = await db.findPhoto(folderId, photoId);
-
-  // The same race with a different loser: the frame was deleted, or moved to
-  // another folder, while this was decoding. `pk` carries the folder, so a move
-  // reads as gone here too — and either way the sweep that removed this photo's
-  // objects ran *before* these derivatives were written, leaving bytes under a
-  // prefix no record names. That is the stranded-object state the folder-delete
-  // guard exists to catch, so take them back out rather than manufacture it.
-  // A move needs nothing more: copying the original into the new prefix
-  // retriggers this function at the destination key.
+  // Decoding a HEIC or a RAF takes seconds while a DELETE takes milliseconds, so
+  // the frame can be destroyed while this is still working on it. The sweep that
+  // removed its objects then ran *before* these derivatives were written, leaving
+  // bytes under a key no record names and nothing left that could find them
+  // again. Re-read and take them back out rather than strand them.
+  //
+  // This used to catch a move as well — `pk` carried the folder, so a moved photo
+  // read as gone here too. Photos are folder-independent now; only a real delete
+  // reaches this branch.
+  const current = await db.getPhoto(photoId);
   if (!current) {
     console.warn('Photo record gone; discarding derivatives just written', {
       key,
       photoId,
     });
-    await deleteDerivatives(folderId, photoId, wroteHidden);
+    await deleteDerivatives(photoId);
     return;
-  }
-
-  if (Boolean(current.hidden) !== wroteHidden) {
-    console.warn('Hidden flag changed while deriving; relocating', {
-      photoId,
-      from: wroteHidden,
-      to: Boolean(current.hidden),
-    });
-    await writeDerivatives(pipeline, folderId, photoId, Boolean(current.hidden));
-    await deleteDerivatives(folderId, photoId, wroteHidden);
   }
 
   const patch: Partial<Photo> = {
@@ -197,7 +175,7 @@ async function processRecord(record: S3EventRecord): Promise<void> {
   // provisional value the upload supplied.
   if (!exif.takenAt) delete patch.takenAt;
 
-  await db.updatePhoto(photo, patch);
+  await db.updatePhoto(photoId, patch);
 
   console.log('Derivatives written', {
     key,

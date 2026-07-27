@@ -7,8 +7,15 @@ export interface Folder {
   coverPhotoId?: string;
 }
 
+/**
+ * A photograph, owned by nobody.
+ *
+ * There is no `folderId` here and none in any key it names. A photo is a row in
+ * one library; a folder is a set of pointers at rows. That is what lets one frame
+ * appear in several rolls, and it is why deleting a roll can no longer destroy an
+ * image — nothing lives *inside* a folder to be taken down with it.
+ */
 export interface Photo {
-  folderId: string;
   photoId: string;
   /** Original filename stem, e.g. "XT300024". This is what pairs JPEG with RAW. */
   basename: string;
@@ -25,12 +32,6 @@ export interface Photo {
   hasRaw: boolean;
   /** Set once the derive Lambda has written thumb/large. */
   derivedAt?: string;
-  /**
-   * Admin-hidden: out of every share, still in the folder and still the owner's.
-   * Absent means visible, so nothing needs backfilling. It is not only a filter —
-   * the derivatives physically live under `f/hidden/…` while it is set.
-   */
-  hidden?: boolean;
   /** Populated from EXIF when available — shown in the lightbox. */
   camera?: string;
   lens?: string;
@@ -38,6 +39,21 @@ export interface Photo {
   aperture?: string;
   shutter?: string;
   focalLength?: string;
+}
+
+/**
+ * One photo's presence in one folder. The only thing that ties the two together,
+ * and cheap enough that a frame can be in as many rolls as you like.
+ *
+ * `uploadedAt` is carried so the item can sort itself in `gsi1` without a lookup
+ * back at the photo — and it is `uploadedAt` rather than `takenAt` for the reason
+ * `photoSk` used to give: derive corrects `takenAt` from EXIF afterwards, and a
+ * sort key cannot be updated in place. Callers sort by `takenAt` after reading.
+ */
+export interface Membership {
+  photoId: string;
+  folderId: string;
+  uploadedAt: string;
 }
 
 export interface Share {
@@ -50,20 +66,6 @@ export interface Share {
   allowDownload: boolean;
   label?: string;
 }
-
-/**
- * The roll photos fall into when their folder is deleted, so that deleting a
- * folder can never destroy an image.
- *
- * A fixed literal id rather than a flag on the item or a UUID recorded
- * somewhere: `createFolder` mints `randomUUID()`, so this string cannot collide
- * with a real roll, and every check for it is a string compare with no lookup
- * behind it. Same trick as the three key prefixes — the identifier itself
- * expresses the rule. Its objects land under `f/orphaned/…` like any other
- * folder's, so nothing in the stack has to know about it.
- */
-export const ORPHAN_FOLDER_ID = 'orphaned';
-export const ORPHAN_FOLDER_NAME = 'Orphaned frames';
 
 /**
  * Two sizes, not three. `thumb` fills the contact sheet and `large` is what the

@@ -246,26 +246,6 @@ button {
   }
 }
 
-/* A frame marked out on the sheet. No accent colour of its own on purpose:
-   --amber means negatives and --safelight means destructive, and hiding is
-   neither. After .frame img.loaded, which it has to override. */
-.frame-hidden img.loaded {
-  opacity: 0.3;
-}
-
-/* Same grease-pencil vocabulary as .frame-no and .frame-pending, opposite corner
-   from both so nothing collides. Always on — the tag is the whole signal. */
-.frame-tag {
-  position: absolute;
-  left: 6px;
-  top: 5px;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--faint);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
-}
-
 /* Frame number, grease-pencilled into the corner of the cell. */
 .frame-no {
   position: absolute;

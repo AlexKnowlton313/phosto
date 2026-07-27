@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## phosto
 
-Self-hosted photo gallery on AWS. Folders, unlisted share links, RAW files hidden
-behind a toggle. Live at `photos.alex-knowlton.com`, single admin, ~$0.29/month
-all-in — of which ~$0.20 is storage once RAW ages into Glacier IR
+Self-hosted photo gallery on AWS. One library of photographs; folders are sets of
+pointers into it, so a frame can be in several rolls or none. Unlisted share links
+per roll, RAW files owner-only. Live at `photos.alex-knowlton.com`, single admin,
+~$0.29/month all-in — of which ~$0.20 is storage once RAW ages into Glacier IR
 (`docs/cost-estimate.md`).
 
 ## Layout
@@ -28,6 +29,7 @@ npm run dev --workspace web        # vite on :5173
 npm run build:layer                # sharp + libheif-js for linux-arm64
 npm run diff                       # cdk diff
 npm run deploy                     # layer + web build + cdk deploy
+npm run migrate:flat -- --dry-run  # one-time, see "Migrating" below
 ```
 
 **There is no test suite** — no runner, no test files, no `npm test`. Don't go
@@ -54,53 +56,62 @@ Deploying needs `infra/config.json` (gitignored — copy `config.example.json`) 
 This is the most important thing to understand before changing anything.
 
 ```
-f/<folderId>/<photoId>/{thumb,large}.webp          derivatives — signed COOKIES
-f/hidden/<folderId>/<photoId>/{thumb,large}.webp   hidden frames — admin cookie only
-orig/<folderId>/<photoId>.<ext>                    originals   — signed URL, per object
-raw/<folderId>/<photoId>.<ext>                     RAW         — signed URL, per object
+f/<photoId>/{thumb,large}.webp   derivatives — admin COOKIE, share SIGNED URL
+orig/<photoId>.<ext>             originals   — signed URL, per object
+raw/<photoId>.<ext>              RAW         — signed URL, per object
 ```
 
-They are separate for two independent reasons, and collapsing them breaks both:
+**No folder id appears in any key.** A photo can be in several rolls at once, so
+nothing about its storage can name one. Folders are membership records, not
+containers.
 
-1. **Sharing is enforced structurally, not by API logic.** A share cookie is scoped
-   to `f/<folderId>/*`, so it *cannot* reach an original or a RAW no matter how the
-   API behaves. JPEG downloads are one-off signed URLs gated on `allowDownload`;
-   RAW is owner-only and has no share route at all.
+The three stay separate for two independent reasons, and collapsing them breaks
+both:
+
+1. **The admin cookie covers `f/*` only,** so it structurally cannot reach an
+   original or a RAW no matter how the API behaves. JPEG downloads are one-off
+   signed URLs gated on `allowDownload`; RAW is owner-only and has no share route.
 2. **The derive Lambda listens on `orig/` and `raw/` and writes to `f/`.** Sharing a
    prefix between input and output would make every write retrigger the function.
 
-Hiding a frame applies the same trick one level down. A share cookie is signed
-for `f/<folderId>/*` and the literal `hidden` segment diverges before the
-wildcard, so hiding revokes cookies already issued — which a list filter cannot.
-`f/hidden/…` still matches the `f/*` CloudFront *behavior* (a path pattern's `*`
-crosses `/`), so routing needs no change. Build every derivative key through
-`derivedKey(folderId, photoId, name, hidden)`; the flag is on the `Photo` record,
-so anything holding the item can read it. Missing it in the derive Lambda
-republishes a hidden frame at the visible key on the next re-derive.
+### How a share is authorised
 
-**Moving the bytes is only half of it.** Derivatives are written `immutable,
-max-age=1y` and `f/*` is on `CACHING_OPTIMIZED`, so a POP that already cached the
-visible URL keeps serving it — and reopening the share mints a fresh cookie that
-still covers that URL, so the hide achieves nothing at the edge. That is why the
-API holds `cloudfront:CreateInvalidation` and calls `invalidate()` after moving
-the objects. The distribution id travels through SSM because `Distribution →
-HttpApi → ApiFunction` means an env var or an ARN-scoped grant would close a
-CloudFormation cycle. What no server-side fix reaches is the viewer's own browser
-cache: `immutable` means their open tab may never revalidate. Hiding revokes the
-frame for everyone they forwarded the link to, not for the person who already had
-it open.
+There is no compute in the image path — CloudFront serves derivatives straight
+from S3, which is what makes this cost $0.29/month — so the only authorization
+primitive available is *a signature over a URL pattern*. A CloudFront policy
+permits exactly one `Resource` statement with `*`/`?` wildcards, and a photo in
+three rolls has one set of bytes under no roll's prefix. **There is therefore no
+wildcard that names exactly one share's photos.**
 
-**That reasoning is not specific to hiding, and neither is the code any more.**
-Moving a frame out of a shared roll and deleting one leave the same cached copy
-behind the same still-valid cookie, so all three removals go through
+So a share gets **one signed URL per derivative per photo**, minted in `openShare`
+via `signObjectUrl` — the same mechanism originals and RAWs already used. Each URL
+is a capability for exactly one object, which is a *tighter* grant than the
+folder-wide cookie it replaces. The admin still gets a cookie for `f/*`, because
+signing ~400 URLs on every grid load would be waste for a credential the browser
+already holds. `presentPhoto`'s `sign` flag is where that fork lives.
+
+**The cost of this, and it is real: a signed URL outlives the record it was minted
+from.** Detaching a photo from a roll changes no bytes — they may be in other
+rolls — so a URL already issued keeps working until it expires (`SHARE_TTL`, 12h).
+There is no server-side revocation, and an invalidation does not help: the object
+still exists and the signature is still valid. Shorten `SHARE_TTL` if that window
+matters. This is inherent to a flat store, not an oversight — the previous model
+bought instant revocation by moving bytes, which is exactly what a photo in
+several rolls cannot do.
+
+**Deleting still needs the edge.** Derivatives are written `immutable, max-age=1y`
+and `f/*` is on `CACHING_OPTIMIZED`, so removing the object at the origin does not
+stop a POP serving the copy it already has. Every removal goes through
 `deleteObjects()` in `functions/api/index.ts` — never a bare
 `DeleteObjectsCommand`. It does two things no caller should repeat: checks
-`Errors` in the *response*, because `DeleteObjects` reports per-key failures
-there rather than throwing and an unchecked partial delete returns success on a
-frame that is still readable; and invalidates, collapsed to one
-`/f/<folder>/<photo>/*` wildcard per photo rather than one path per key, which
-is what keeps orphaning a 200-frame roll inside CloudFront's free 1000
-paths/month.
+`Errors` in the *response*, because `DeleteObjects` reports per-key failures there
+rather than throwing and an unchecked partial delete returns success on a frame
+that is still readable; and invalidates, collapsed to one `/f/<photo>/*` wildcard
+per photo rather than one path per key, which is what keeps a bulk delete inside
+CloudFront's free 1000 paths/month. The API holds
+`cloudfront:CreateInvalidation` for this; the distribution id travels through SSM
+because `Distribution → HttpApi → ApiFunction` means an env var or an ARN-scoped
+grant would close a CloudFormation cycle.
 
 The cover is a third route to the same bytes: `/s/<token>/og.webp` streams it at
 2400px with **no cookie at all** and is edge-cached for `PREVIEW_TTL`, so
@@ -124,17 +135,22 @@ throwing `HttpError(status, message)`; anything else becomes a 500 with the deta
 logged rather than returned.
 
 `presentPhoto` shapes both the admin and the share response. It takes
-`allowDownload` / `allowRaw` and omits what the caller may not have, so original
-and RAW keys never appear in a payload that isn't permitted to fetch them — the API
-counterpart to the prefix split above. `openShare` always passes `allowRaw: false`:
-shares are JPEG-only by construction, so the admin view is the only place `hasRaw`
-is ever true and the only place a Download RAW button appears.
+`allowDownload` / `allowRaw` / `sign` and omits what the caller may not have, so
+original and RAW keys never appear in a payload that isn't permitted to fetch them
+— the API counterpart to the prefix split above. `openShare` always passes
+`allowRaw: false`: shares are JPEG-only by construction, so the admin view is the
+only place `hasRaw` is ever true and the only place a Download RAW button appears.
 
-Two credential types come out of this Lambda and they are not interchangeable:
-signed **cookies** for derivatives (admin gets `f/*`, a share gets
-`f/<folderId>/*`) and single-object signed **URLs** for originals and RAWs. Both
-are minted in `functions/shared/signing.ts` from the SSM-held private key, cached
-per container but never cached as a rejected promise.
+Two credential types come out of this Lambda and they are not interchangeable: one
+signed **cookie** for `f/*`, issued only to the admin, and single-object signed
+**URLs** for everything else — every share derivative, plus all originals and RAWs.
+Both are minted in `functions/shared/signing.ts` from the SSM-held private key,
+cached per container but never cached as a rejected promise.
+
+Routes that take a photo do **not** take a folder: a photo belongs to no folder, so
+`/api/photos/<id>` is the whole path. `/api/folders/<id>/photos` is the membership
+route — `PUT` attaches, `DELETE` detaches, and neither destroys anything.
+`DELETE /api/photos/<id>` is the only route in the API that can lose a photograph.
 
 `functions/` is `module: NodeNext`, so relative imports must carry a `.js`
 extension even though the sources are `.ts` — `import * as db from
@@ -199,15 +215,22 @@ the index.
   `attribute_exists(pk)`.** Every caller holds an item it read earlier, and
   derive reads the photo and then spends *seconds* decoding a RAF. Delete the
   frame in that window and an unguarded update recreates the row from its key
-  plus the patch: no `photoId`, no `basename`, no `folderId`. `listPhotos`
-  returns it because the sort key still matches, the grid renders
-  `/f/undefined/undefined/thumb.webp`, and `findPhoto` filters on `photoId`, so
-  no route can delete it again. It returns `false` instead of throwing —
-  the record being gone is a race, not a failure. Derive pairs that with a
-  re-read after `writeDerivatives`: a `null` there means deleted *or* moved
-  (`pk` carries the folder), and the derivatives it just wrote landed after the
-  sweep that was meant to remove them, so it deletes them rather than strand
-  them under a prefix no record names.
+  plus the patch: no `photoId`, no `basename`. `listLibrary` returns it because
+  the gsi1 projection still matches and the grid renders
+  `/f/undefined/thumb.webp`. It returns `false` instead of throwing — the record
+  being gone is a race, not a failure. Derive pairs that with a re-read after
+  `writeDerivatives`: a `null` there means the frame was deleted mid-decode, and
+  the derivatives it just wrote landed *after* the sweep meant to remove them, so
+  it deletes them rather than strand bytes no record names.
+- **A signed object URL is a capability that outlives the record it came from.**
+  Detaching a photo from a roll, or clearing a cover, changes no bytes — so any
+  URL already handed out keeps working until it expires. Nothing server-side
+  revokes it, and an invalidation does not help: the object exists and the
+  signature is valid. Only `SHARE_TTL` bounds it. Do not write code, or docs,
+  that describes detaching as a revocation.
+- **`presentPhoto` is async and signs per object.** Calling it in a `.map()`
+  without `Promise.all` yields an array of promises that `JSON.stringify` renders
+  as `[{},{}]` — a 200 with an empty-looking payload rather than an error.
 
 ## Data model
 
@@ -216,17 +239,30 @@ One DynamoDB table, reached only through `functions/shared/db.ts`:
 | Item | pk | sk | gsi1pk / gsi1sk |
 |---|---|---|---|
 | Folder | `FOLDER#<id>` | `META` | `ROOT` / `<createdAt>#<id>` |
-| Photo | `FOLDER#<id>` | `PHOTO#<uploadedAt>#<photoId>` | — |
+| Photo | `PHOTO#<id>` | `META` | `LIB` / `<uploadedAt>#<id>` |
+| Membership | `PHOTO#<id>` | `FOLDER#<fid>` | `FOLDER#<fid>` / `PHOTO#<uploadedAt>#<photoId>` |
 | Share | `SHARE#<sha256>` | `META` | `FOLDER#<id>` / `SHARE#<createdAt>` |
 
-`gsi1` is overloaded: `gsi1pk = ROOT` lists every folder, `gsi1pk = FOLDER#<id>`
-lists that folder's shares.
+**A photo is owned by nobody.** It is a row in one library; a folder is a set of
+pointers at rows. That is what lets one frame appear in several rolls, and it is
+why deleting a folder can no longer destroy an image — nothing lives *inside* one.
 
-Photo sort keys use `uploadedAt`, **not** `takenAt` — the derive Lambda corrects
-`takenAt` from EXIF, and a sort key cannot be updated in place. Callers sort by
-`takenAt` after reading. `photoId` is absent from the sort key too, so `findPhoto`
-is a filtered query across the folder partition rather than a point read; that is
-the first thing that stops scaling.
+`gsi1` is overloaded three ways: `gsi1pk = ROOT` lists every folder, `gsi1pk = LIB`
+lists every photo, and `gsi1pk = FOLDER#<id>` holds both that folder's shares
+(`SHARE#…`) and its photos (`PHOTO#…`) — two `begins_with` queries on one
+partition. `LIB` is a single partition; at 835 photos that is one page, and the
+`ponytail:` comment on `LIBRARY_PK` names the upgrade path.
+
+Membership sort keys use `uploadedAt`, **not** `takenAt` — the derive Lambda
+corrects `takenAt` from EXIF, and a sort key cannot be updated in place. Callers
+sort by `takenAt` after reading. Listing a folder is therefore two round trips: a
+`gsi1` query for memberships, then a `BatchGetItem` for the photo records. The
+alternative — copying photo fields onto every membership — would make each EXIF
+correction fan out to every roll the frame is in.
+
+`getPhoto` is a point read now that `photoId` is the partition key. It used to be
+a filtered query across a folder partition, and was documented as the first thing
+that would stop scaling.
 
 A JPEG and a RAW sharing a basename (`XT300024.JPG` + `.RAF`) are **one** photo
 with `hasRaw: true`. That pairing is why uploads are requested as a batch. The
@@ -234,19 +270,18 @@ JPEG wins as the preview source; the RAF path only runs for RAW-only photos. The
 batch is capped at 200 files in `createUploads` and the admin UI does not chunk, so
 dropping more than that on it fails the whole selection with a 400.
 
-One folder id is a literal rather than a UUID: `orphaned` (`ORPHAN_FOLDER_ID`).
-It is created lazily on first use, refuses PATCH of `name` and every DELETE, and
-is otherwise an ordinary folder — keys are `f/orphaned/…` like any other. Real
-ids come from `randomUUID()`, so the literal cannot collide.
+Attach and detach carry **no batch cap**: each is one transaction and touches no
+S3. The old move route was capped at ten because every photo cost a transaction
+plus two `CopyObject`s against a 15-second timeout.
 
-`DELETE /api/folders/<id>` still **refuses** a roll that holds frames; moving
-them to `orphaned` first is a client workflow in `deleteRoll`, not something the
-route does for you. It refuses twice over: once on the photo count, and again if
-any object remains under the folder's three prefixes. The second check is the
-one that matters — a move writes the record before it copies the bytes, so a
-batch killed mid-flight leaves objects under the old prefix with no record
-naming them, and deleting the folder then removes the last handle to a
-photograph that is still sitting in the bucket.
+`DELETE /api/folders/<id>` never refuses. It cascades the folder's memberships and
+its shares, and every photograph survives in the library. There is no orphan roll,
+no stranded-object sweep, and no count guard — all three existed because deleting
+a folder used to be able to delete a photograph.
+
+`photoCount` is bumped inside the same transaction as the membership, so a roll
+can never claim a number its member list denies. `createUploads` does not bump it
+separately.
 
 Share tokens are stored SHA-256 hashed. `getShare` checks expiry in code because
 DynamoDB TTL deletion can lag up to 48 hours — which is also why the admin's share
@@ -289,6 +324,14 @@ up.
 Cognito, so a share viewer never loads the auth path; everything else is the admin
 UI behind sign-in.
 
+The admin is folder-first with **All photos** as the first entry in the roll list.
+That entry is a pseudo-roll: `LIBRARY_ID` (`'all'`) is not a folder id the server
+knows, so `Admin.tsx` synthesises a `FolderView` for it and `isLibrary` gates
+everything a real roll has and it doesn't — upload, rename, share, cover, delete
+roll, and Remove from roll. *Add to roll* and *Delete photos* work from both.
+"Remove from roll" and "Delete photos" sit next to each other and look alike, so
+the destructive one is safelight red and its confirm spells out the difference.
+
 The web bundle holds no account-specific values: CDK writes `config.json` into the
 bucket at deploy time via `Source.jsonData`, and `loadConfig()` fetches it at
 startup. Moving pool IDs or the domain into `VITE_` env vars would put them back in
@@ -322,6 +365,43 @@ was.
 
 macOS writes `._NAME` AppleDouble sidecars onto FAT cards — 4 KB of metadata with a
 real image extension. They must stay filtered or they upload as corrupt photos.
+
+It writes the Photo item **and** its membership. The photo lands in the library
+either way; the membership is what puts it in the named roll.
+
+## Migrating (one time, from folder-owned keys)
+
+`scripts/migrate-flat.mjs` converts a library written under the old
+`f/<folderId>/<photoId>/…` layout. It has not been run yet.
+
+```bash
+npm run migrate:flat -- --dry-run   # always
+npm run migrate:flat                # steps 1-3: records, then copy sources
+npm run migrate:flat -- --sweep     # steps 4-5, once every derive has landed
+```
+
+**Records before bytes**, the ordering rule the old move path lived by: derive
+looks a photo up by the id in the key and silently drops the event if there is no
+record, so an object landing first gets no derivatives, permanently. Copying into
+`orig/` retriggers derive, which writes the flat derivatives itself — the script
+never copies a derivative by hand. `--sweep` refuses while any photo still lacks
+`derivedAt`, because it deletes the last copy of the originals.
+
+Currently-hidden frames migrate to a Photo record with **no** membership: "in my
+library, out of every share" is exactly what belonging to no roll now means. The
+script names them rather than counting them.
+
+**Cost turns entirely on where `raw/` is when you run it.** Measured 2026-07-26,
+every RAF was still `STANDARD` — the lifecycle rule moves them at 30 days — so the
+run was ~$0.01 in requests plus ~$0.15 of derive Lambda. Once they have aged into
+Glacier IR the same run costs ~$0.60 more (reading 11.89 GB out at $0.03/GB, plus
+a month of the copies in Standard), and GIR's 90-day minimum bills the remainder on
+any RAW deleted early. Check the storage class before assuming either number.
+
+The library is doubled between the copy and the sweep, so run it in one sitting.
+Steps 1-3 are idempotent — the Puts overwrite and `CopyObject` overwrites — so
+re-running the non-sweep phase after a failure is safe. `--sweep` is not: it is
+the step that deletes the last copy of the originals.
 
 ## Operational notes
 

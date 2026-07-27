@@ -30,7 +30,7 @@ import { dirname } from 'node:path';
 import { S3Client } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { CloudFormationClient, DescribeStacksCommand } from '@aws-sdk/client-cloudformation';
 import sharp from 'sharp';
 import exifReader from 'exif-reader';
@@ -312,13 +312,16 @@ async function main() {
       try {
         // The photo record must exist before the objects land: the derive Lambda
         // looks it up by key and drops the event if there is nothing to update.
+        // The photo owns no folder — `gsi1pk: LIB` is what puts it in the
+        // library — and the membership below is what puts it in this roll.
         await ddb.send(
           new PutCommand({
             TableName: table,
             Item: {
-              pk: `FOLDER#${state.folderId}`,
-              sk: `PHOTO#${now}#${photoId}`,
-              folderId: state.folderId,
+              pk: `PHOTO#${photoId}`,
+              sk: 'META',
+              gsi1pk: 'LIB',
+              gsi1sk: `${now}#${photoId}`,
               photoId,
               basename: group.stem,
               takenAt: group.takenAt,
@@ -332,11 +335,26 @@ async function main() {
           }),
         );
 
+        await ddb.send(
+          new PutCommand({
+            TableName: table,
+            Item: {
+              pk: `PHOTO#${photoId}`,
+              sk: `FOLDER#${state.folderId}`,
+              gsi1pk: `FOLDER#${state.folderId}`,
+              gsi1sk: `PHOTO#${now}#${photoId}`,
+              photoId,
+              folderId: state.folderId,
+              uploadedAt: now,
+            },
+          }),
+        );
+
         if (group.image) {
-          await putObject(bucket, `orig/${state.folderId}/${photoId}.${group.image.ext}`, group.image);
+          await putObject(bucket, `orig/${photoId}.${group.image.ext}`, group.image);
         }
         if (group.raw) {
-          await putObject(bucket, `raw/${state.folderId}/${photoId}.${group.raw.ext}`, group.raw);
+          await putObject(bucket, `raw/${photoId}.${group.raw.ext}`, group.raw);
         }
 
         state.done[group.stem] = photoId;
@@ -361,16 +379,43 @@ async function main() {
     saveState();
   }
 
+  // Counted off the memberships, not off `state.done`.
+  //
+  // The local tally was a fair proxy when uploading was the only way a photo got
+  // into a folder. It is not any more: frames can be added to a roll from the
+  // library, and those have no stem in this script's state file — so writing
+  // `state.done.length` here would silently erase them from the count. Ask the
+  // table what is actually in the folder.
+  let photoCount = 0;
+  let countCursor;
+  do {
+    const page = await ddb.send(
+      new QueryCommand({
+        TableName: table,
+        IndexName: 'gsi1',
+        KeyConditionExpression: 'gsi1pk = :pk AND begins_with(gsi1sk, :prefix)',
+        ExpressionAttributeValues: {
+          ':pk': `FOLDER#${state.folderId}`,
+          ':prefix': 'PHOTO#',
+        },
+        Select: 'COUNT',
+        ExclusiveStartKey: countCursor,
+      }),
+    );
+    photoCount += page.Count ?? 0;
+    countCursor = page.LastEvaluatedKey;
+  } while (countCursor);
+
   await ddb.send(
     new UpdateCommand({
       TableName: table,
       Key: { pk: `FOLDER#${state.folderId}`, sk: 'META' },
       UpdateExpression: 'SET photoCount = :count',
-      ExpressionAttributeValues: { ':count': Object.keys(state.done).length },
+      ExpressionAttributeValues: { ':count': photoCount },
     }),
   );
 
-  console.log(`\n\nDone. ${completed} photos uploaded.`);
+  console.log(`\n\nDone. ${completed} photos uploaded; roll now holds ${photoCount}.`);
   console.log('Derivatives are generated asynchronously — the grid fills in as they land.');
 }
 

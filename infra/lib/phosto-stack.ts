@@ -34,16 +34,18 @@ export interface PhostoStackProps extends cdk.StackProps {
 }
 
 /**
- * Key prefixes. The split between them is load-bearing, not cosmetic:
+ * Key prefixes. No folder id appears in any of them — a photo can be in several
+ * rolls at once, so nothing about its key can name one:
  *
- *   f/<folderId>/<photoId>/*  derivatives, reachable with a folder-scoped cookie
- *   orig/<folderId>/*         full-size originals, one signed URL per download
- *   raw/<folderId>/*          RAW files, one signed URL per download, → Glacier IR
+ *   f/<photoId>/*   derivatives, admin by cookie, shares by per-object signed URL
+ *   orig/<photoId>  full-size originals, one signed URL per download
+ *   raw/<photoId>   RAW files, one signed URL per download, → Glacier IR
  *
- * A share cookie is scoped to `f/<folderId>/*`, so it structurally cannot reach an
- * original or a RAW no matter how the API behaves. Originals and RAWs also live
- * outside the derivative prefix so S3 notifications can't retrigger on the Lambda's
- * own output.
+ * The split between the three is still load-bearing, for two reasons. The derive
+ * Lambda listens on `orig/` and `raw/` and writes to `f/`, so sharing a prefix
+ * between input and output would make every write retrigger the function. And the
+ * admin's cookie covers `f/*` only, so it structurally cannot reach an original or
+ * a RAW however the API behaves — those need a URL minted per object.
  */
 const PREFIX = { derived: 'f/', originals: 'orig/', raw: 'raw/' } as const;
 
@@ -194,7 +196,13 @@ export class PhostoStack extends cdk.Stack {
       entry: join(repoRoot, 'functions/api/index.ts'),
       runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
-      memorySize: 512,
+      // 1769 MB is exactly one vCPU — below it Lambda hands out a fraction, and
+      // opening a share is now CPU-bound: it signs a URL per derivative per photo,
+      // which is ~400 RSA operations for a 200-frame roll. At 512 MB that was
+      // ~1.6s of signing; here it is ~540ms. Roughly cost-neutral, since duration
+      // falls about as fast as the per-ms price rises, and it stays inside the
+      // 400k GB-s permanent free tier either way.
+      memorySize: 1769,
       timeout: cdk.Duration.seconds(15),
       bundling,
       environment: {
@@ -369,6 +377,10 @@ function handler(event) {
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           originRequestPolicy:
             cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          // Opening a share returns a signed URL per derivative — ~189 KB of
+          // mostly-base64 for a 200-frame roll, where it used to be a few KB of
+          // relative paths plus a cookie header.
+          compress: true,
         },
         /*
          * The share page and its preview image, rendered by the API Lambda so a

@@ -1,11 +1,9 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
-  CopyObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
   DeleteObjectsCommand,
-  ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl as presignS3 } from '@aws-sdk/s3-request-presigner';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
@@ -19,13 +17,10 @@ import {
   contentTypeFor,
   derivedKey,
   extensionOf,
-  folderResource,
   isImageExt,
   isRawExt,
   originalKey,
   PREFIX_DERIVED,
-  PREFIX_ORIGINALS,
-  PREFIX_RAW,
   rawKey,
 } from '../shared/keys.js';
 import {
@@ -37,8 +32,6 @@ import {
 import { invalidate } from '../shared/invalidate.js';
 import {
   DERIVATIVE_SIZES,
-  ORPHAN_FOLDER_ID,
-  ORPHAN_FOLDER_NAME,
   type Folder,
   type Photo,
 } from '../shared/types.js';
@@ -110,12 +103,41 @@ const hashToken = (token: string) =>
 const byTakenAtDesc = (a: Photo, b: Photo) =>
   (b.takenAt ?? b.uploadedAt).localeCompare(a.takenAt ?? a.uploadedAt);
 
+interface Presentation {
+  allowDownload: boolean;
+  allowRaw: boolean;
+  /**
+   * Whether derivative URLs need signing.
+   *
+   * The admin holds a cookie covering the whole `f/*` prefix, so its URLs stay
+   * relative and cost nothing — signing a 200-frame grid on every page load would
+   * be ~400 RSA operations for a credential the browser already has. A share
+   * holds no cookie at all: photos are no longer under a folder prefix, so there
+   * is no wildcard that names exactly this roll and each object is granted on its
+   * own.
+   */
+  sign: boolean;
+}
+
 /**
- * What a viewer is allowed to see. Derivative URLs are relative because the signed
- * cookies already authorise them; originals and RAWs are omitted entirely unless
+ * What a viewer is allowed to see. Originals and RAWs are omitted entirely unless
  * the caller has the matching permission, so their keys never leak.
  */
-function presentPhoto(photo: Photo, allowDownload: boolean, allowRaw: boolean) {
+async function presentPhoto(photo: Photo, opts: Presentation) {
+  const names = Object.keys(DERIVATIVE_SIZES) as (keyof typeof DERIVATIVE_SIZES)[];
+
+  // ponytail: signs thumb+large per photo, ~540ms for a 200-frame roll on a 1-vCPU
+  // Lambda. Sign `large` on demand if that ever shows — at the cost of one Lambda
+  // invocation per lightbox open, where this is one per share.
+  const urls = Object.fromEntries(
+    await Promise.all(
+      names.map(async (name) => {
+        const key = derivedKey(photo.photoId, name);
+        return [name, opts.sign ? await signObjectUrl(key, SHARE_TTL) : `/${key}`];
+      }),
+    ),
+  );
+
   return {
     photoId: photo.photoId,
     basename: photo.basename,
@@ -123,25 +145,25 @@ function presentPhoto(photo: Photo, allowDownload: boolean, allowRaw: boolean) {
     width: photo.width,
     height: photo.height,
     ready: Boolean(photo.derivedAt),
-    hidden: photo.hidden,
-    hasRaw: allowRaw && photo.hasRaw,
-    canDownload: allowDownload && Boolean(photo.originalExt),
+    hasRaw: opts.allowRaw && photo.hasRaw,
+    canDownload: opts.allowDownload && Boolean(photo.originalExt),
     camera: photo.camera,
     lens: photo.lens,
     iso: photo.iso,
     aperture: photo.aperture,
     shutter: photo.shutter,
     focalLength: photo.focalLength,
-    urls: Object.fromEntries(
-      (Object.keys(DERIVATIVE_SIZES) as (keyof typeof DERIVATIVE_SIZES)[]).map(
-        (name) => [
-          name,
-          `/${derivedKey(photo.folderId, photo.photoId, name, photo.hidden)}`,
-        ],
-      ),
-    ),
+    urls,
   };
 }
+
+/** The owner always has both permissions on their own library, and a cookie. */
+const asAdmin = (photos: Photo[]) =>
+  Promise.all(
+    photos
+      .sort(byTakenAtDesc)
+      .map((p) => presentPhoto(p, { allowDownload: true, allowRaw: true, sign: false })),
+  );
 
 // -------------------------------------------------------------- admin handlers
 
@@ -204,7 +226,6 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
     const takenAt = groupFiles.find((f) => f.lastModified)?.lastModified;
 
     const photo: Photo = {
-      folderId,
       photoId,
       basename: base,
       // Provisional. The derive Lambda overwrites this from EXIF when it can.
@@ -216,14 +237,16 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
       rawExt: raw ? extensionOf(raw.filename) : undefined,
       rawBytes: raw?.size,
     };
+    // The record, then its membership. Uploading into a roll is the ordinary
+    // case, but the photo exists in the library either way — a failure between
+    // the two leaves a frame in "All photos" rather than a frame nothing names.
     await db.putPhoto(photo);
+    await db.attachPhoto(folderId, photo);
     created += 1;
 
     for (const file of groupFiles) {
       const ext = extensionOf(file.filename);
-      const key = isRawExt(ext)
-        ? rawKey(folderId, photoId, ext)
-        : originalKey(folderId, photoId, ext);
+      const key = isRawExt(ext) ? rawKey(photoId, ext) : originalKey(photoId, ext);
 
       uploads.push({
         filename: file.filename,
@@ -241,14 +264,16 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
     }
   }
 
-  await db.bumpPhotoCount(folderId, created);
+  // No count bump here — `attachPhoto` carries it inside the same transaction as
+  // the membership, so the roll can never claim a number its member list denies.
+  console.log('Uploads issued', { folderId, photos: created, objects: uploads.length });
   return json(200, { uploads });
 }
 
 /**
  * The share page and its og:image come out of this Lambda and are cached at the
  * edge for `PREVIEW_TTL` with no cookie involved. A cover that has just stopped
- * being viewable — hidden, moved, deleted — therefore keeps unfurling at 2400px
+ * being viewable — detached from the roll, or deleted — keeps unfurling at 2400px
  * until that expires, through a route that never looks at the photo record.
  *
  * `/s/*` rather than the two exact URLs: the path carries the plaintext token
@@ -257,36 +282,16 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
  */
 const invalidatePreviews = () => invalidate(['/s/*']);
 
-/** Drops the roll's cover if this photo is it. True when it actually cleared. */
-async function clearCoverIfSet(folderId: string, photoId: string): Promise<boolean> {
-  const folder = await db.getFolder(folderId);
-  if (folder?.coverPhotoId !== photoId) return false;
-  await db.clearCover(folderId);
-  return true;
-}
-
-/** Every object a photo owns under one folder — what delete removes and what a
- * move leaves behind at the source. */
-const photoObjectKeys = (folderId: string, photo: Photo) => [
-  // Off the record rather than a parameter: a hidden photo's derivatives are
-  // under `f/hidden/`, and every caller here already holds the item — so delete
-  // and a move's source cleanup both follow the flag without being told to.
+/** Every object a photo owns — what destroying it removes. */
+const photoObjectKeys = (photo: Photo) => [
   ...Object.keys(DERIVATIVE_SIZES).map((name) =>
-    derivedKey(
-      folderId,
-      photo.photoId,
-      name as keyof typeof DERIVATIVE_SIZES,
-      photo.hidden,
-    ),
+    derivedKey(photo.photoId, name as keyof typeof DERIVATIVE_SIZES),
   ),
-  // Photos derived before the middle size was dropped still have one in S3, and
-  // always at the visible key — hiding deletes that one rather than moving it,
-  // since nothing renders it. Listed so deleting leaves no billed orphan behind.
-  `${PREFIX_DERIVED}${folderId}/${photo.photoId}/medium.webp`,
-  ...(photo.originalExt
-    ? [originalKey(folderId, photo.photoId, photo.originalExt)]
-    : []),
-  ...(photo.rawExt ? [rawKey(folderId, photo.photoId, photo.rawExt)] : []),
+  // Photos derived before the middle size was dropped still have one in S3.
+  // Listed so deleting leaves no billed orphan behind.
+  `${PREFIX_DERIVED}${photo.photoId}/medium.webp`,
+  ...(photo.originalExt ? [originalKey(photo.photoId, photo.originalExt)] : []),
+  ...(photo.rawExt ? [rawKey(photo.photoId, photo.rawExt)] : []),
 ];
 
 /**
@@ -298,9 +303,7 @@ const photoObjectKeys = (folderId: string, photo: Photo) => [
  * throwing, so an unchecked partial delete returns success on a frame that is
  * still fully readable. And derivatives carry `immutable, max-age=1y`, so
  * removing the object at the origin does not stop a POP serving the copy it
- * already has — while a share cookie scoped to `f/<folderId>/*` keeps covering
- * that URL, and reopening the link mints a fresh one. Hiding, moving out of a
- * shared roll and deleting are all the same read at the edge.
+ * already has to anyone holding a still-valid signed URL for it.
  *
  * Invalidation runs after the check, and is best-effort inside `invalidate`:
  * the bytes are the durable half, and failing a request that mostly succeeded
@@ -309,9 +312,8 @@ const photoObjectKeys = (folderId: string, photo: Photo) => [
  * Only the derivative keys are invalidated, collapsed to one wildcard per photo
  * directory. Originals and RAWs are left out because they are reached by a
  * five-minute signed URL minted for someone already authorised, so a POP copy
- * is not the leak — and `f/<folder>/<photo>/*` costs one path against
- * CloudFront's 1000-a-month free allowance where the four keys under it would
- * cost four. That difference is what orphaning a 200-frame roll turns on.
+ * is not the leak — and `f/<photo>/*` costs one path against CloudFront's
+ * 1000-a-month free allowance where the keys under it would cost one each.
  */
 async function deleteObjects(keys: string[], what: string) {
   const res = await s3.send(
@@ -332,273 +334,88 @@ async function deleteObjects(keys: string[], what: string) {
   await invalidate([...dirs]);
 }
 
-async function deletePhotoAndObjects(folderId: string, photoId: string) {
-  const photo = await db.findPhoto(folderId, photoId);
+/**
+ * Destroys the photograph itself — every folder loses it at once.
+ *
+ * The only route that can remove an image from the library, and deliberately not
+ * reachable from inside a roll: a roll holds pointers, so removing a frame from
+ * one is `detachPhoto` and costs nothing. That separation is what retired the
+ * orphan roll. Deleting a folder used to be able to lose a photograph, so photos
+ * had somewhere to fall; now there is nothing to fall out of.
+ *
+ * `db.deletePhoto` unpicks the memberships first, decrementing each roll's count
+ * and dropping any cover that named this frame, so nothing is left listing it.
+ */
+async function destroyPhoto(photoId: string) {
+  const photo = await db.getPhoto(photoId);
   if (!photo) throw new HttpError(404, 'Photo not found');
 
-  // Before the objects, for the same reason `setPhotoHidden` clears it first: a
-  // cover is streamed cookie-free through `/s/<token>/og.webp`, and a throw
-  // below must not leave the roll advertising a frame that is on its way out.
-  if (await clearCoverIfSet(folderId, photoId)) await invalidatePreviews();
+  // Covers are streamed cookie-free through `/s/<token>/og.webp` and edge-cached,
+  // so dropping the record is not enough on its own. `db.deletePhoto` clears the
+  // field as it detaches, but only an invalidation stops the preview unfurling in
+  // the meantime — so ask before, and act after it has actually gone.
+  const memberships = await db.listPhotoMemberships(photoId);
+  const folders = await Promise.all(
+    memberships.map((m) => db.getFolder(m.folderId)),
+  );
+  const wasCover = folders.some((f) => f?.coverPhotoId === photoId);
 
-  await deleteObjects(photoObjectKeys(folderId, photo), 'object(s)');
-  await db.deletePhoto(photo);
-  await db.bumpPhotoCount(folderId, -1);
+  await deleteObjects(photoObjectKeys(photo), 'object(s)');
+  await db.deletePhoto(photoId);
+  if (wasCover) await invalidatePreviews();
 
   return json(204, {});
 }
 
 /**
- * Moves one photo, record first and objects after.
+ * Puts photos into a roll, or takes them out. One transaction each, no S3 work.
  *
- * The move is physical because the key path *is* the authorization boundary: a
- * share cookie is signed for `f/<folderId>/*`, so a record that merely claimed a
- * new folder would stay readable by a stale share on the old one and stay
- * invisible to a share on the new one, with the API looking correct throughout.
+ * This is the whole of what "move" used to be, and the contrast is the point: a
+ * move copied the original into a new prefix, waited for the derive Lambda to
+ * rebuild the derivatives there, swept the old keys, and was capped at ten frames
+ * because each one was a transaction plus two `CopyObject`s against a 15-second
+ * timeout. Membership touches no bytes, so there is no ordering rule, no
+ * stranded-object state and no batch cap — the photo never moves, only the
+ * pointers at it.
  *
- * The order is the whole trick and cannot be rearranged:
- *
- * 1. The record moves first. Derive drops an event whose photo it cannot find
- *    (`findPhoto` returns null) and nothing retries it, so an object landing
- *    ahead of its record arrives with no derivatives, permanently.
- * 2. Copying the original into the destination prefix retriggers derive at the
- *    new key, which is what rebuilds `f/<dst>/…`. The derivatives are therefore
- *    never copied by hand. The RAW copy after it returns immediately for a
- *    paired photo and re-extracts the preview for a RAW-only one.
- * 3. The old keys go last, derivatives included.
- *
- * Every step logs both keys: if this dies mid-flight the photo is stuck as
- * DEVELOPING in the destination, and the repair is the documented re-derive
- * copy — which needs to know where the original actually is right now.
+ * Whole batch, one report: a 404 on frame 12 would hide the thirty that worked.
+ * `already` counts the no-ops so the client can say "3 were already in this roll"
+ * rather than claim it added them.
  */
-async function movePhotoAndObjects(
-  source: Folder,
-  photoId: string,
-  toFolderId: string,
-) {
-  const photo = await db.findPhoto(source.folderId, photoId);
-  if (!photo) throw new HttpError(404, 'Photo not found');
-
-  await db.movePhoto(source, photo, toFolderId);
-  console.log('Moved photo record', {
-    photoId,
-    from: source.folderId,
-    to: toFolderId,
-  });
-
-  for (const [from, to] of [
-    ...(photo.originalExt
-      ? [
-          [
-            originalKey(source.folderId, photoId, photo.originalExt),
-            originalKey(toFolderId, photoId, photo.originalExt),
-          ],
-        ]
-      : []),
-    ...(photo.rawExt
-      ? [
-          [
-            rawKey(source.folderId, photoId, photo.rawExt),
-            rawKey(toFolderId, photoId, photo.rawExt),
-          ],
-        ]
-      : []),
-  ]) {
-    // CopyObject reads Glacier Instant Retrieval without a restore step, so an
-    // aged RAF moves like any other object — the copy just lands in Standard
-    // and starts its own 30-day clock.
-    await s3.send(
-      new CopyObjectCommand({
-        Bucket: BUCKET,
-        CopySource: `${BUCKET}/${from}`,
-        Key: to,
-      }),
-    );
-    console.log('Copied object', { photoId, from, to });
-  }
-
-  const stale = photoObjectKeys(source.folderId, photo);
-  await deleteObjects(stale, 'source object(s)');
-  console.log('Deleted source objects', { photoId, keys: stale, to: toFolderId });
-
-  // The transaction above drops the cover when the moved frame was it, so the
-  // roll's link preview is now pointing at a folder that no longer holds it.
-  if (source.coverPhotoId === photoId) await invalidatePreviews();
-}
-
-/**
- * Hides or unhides one frame, moving its derivatives between `f/<folder>/…` and
- * `f/hidden/<folder>/…`.
- *
- * A boolean filtered out of `openShare` would not have been enough. The reason
- * to hide a frame is almost always that it was already shared, and that viewer's
- * browser is holding the derivative URL — in history, in cache, in an open tab.
- * A list filter leaves that URL working, and re-opening the share link mints a
- * fresh cookie for the whole folder prefix. Moving the bytes revokes it.
- *
- * Copy, flip, delete — the OPPOSITE order from `movePhotoAndObjects`, and for a
- * reason that does not generalise. A move needs the record ahead of the bytes
- * because derive drops an event whose photo it cannot find. Nothing re-derives
- * here: the flag is the only thing pointing at these keys, so it must not be
- * flipped until the bytes it names exist. Both copies are live in between, so
- * neither the grid nor an open share renders a hole mid-flight.
- */
-async function setPhotoHidden(
+async function setMembership(
   event: APIGatewayProxyEventV2,
   folderId: string,
-  photoId: string,
+  attach: boolean,
 ) {
-  const { hidden } = parseBody<{ hidden?: boolean }>(event);
-  if (typeof hidden !== 'boolean') throw new HttpError(400, 'hidden must be a boolean');
+  const { photoIds } = parseBody<{ photoIds?: string[] }>(event);
+  if (!Array.isArray(photoIds) || !photoIds.length) {
+    throw new HttpError(400, 'photoIds[] is required');
+  }
 
   const folder = await db.getFolder(folderId);
   if (!folder) throw new HttpError(404, 'Folder not found');
 
-  const photo = await db.findPhoto(folderId, photoId);
-  if (!photo) throw new HttpError(404, 'Photo not found');
-
-  const names = Object.keys(DERIVATIVE_SIZES) as Array<keyof typeof DERIVATIVE_SIZES>;
-
-  // Before the S3 work, not after. `shareCover` streams the cover through
-  // `/s/<token>/og.webp` with no cookie at all, so a throw further down must not
-  // leave a hidden frame still named as the roll's cover. Clearing the record is
-  // not enough on its own — that response is edge-cached, hence the second call.
-  if (hidden && (await clearCoverIfSet(folderId, photoId))) await invalidatePreviews();
-
-  // Deliberately not guarded on the flag actually changing. Every step below is
-  // idempotent, and a retry is the only repair available when a previous attempt
-  // flipped the flag and then failed to move the bytes — which would otherwise
-  // leave the record claiming hidden while the share prefix still served it, a
-  // state no amount of re-clicking Hide could fix.
-  const stale = names.map((name) => derivedKey(folderId, photoId, name, !hidden));
-
-  for (const name of names) {
-    await s3
-      .send(
-        new CopyObjectCommand({
-          Bucket: BUCKET,
-          CopySource: `${BUCKET}/${derivedKey(folderId, photoId, name, !hidden)}`,
-          Key: derivedKey(folderId, photoId, name, hidden),
-        }),
-      )
-      .catch((err: { name?: string }) => {
-        // Nothing at the source is the normal case twice over: a frame still
-        // DEVELOPING has no derivatives yet, and a retry finds them already moved.
-        if (err.name !== 'NoSuchKey') throw err;
-      });
-  }
-
-  await db.updatePhoto(photo, { hidden });
-
-  if (hidden) {
-    // Never moved, only removed. Nothing renders the dropped middle size, but it
-    // sits at a key anyone who saw `large.webp` can guess from it, so for a photo
-    // old enough to have one it would be the hole this whole move closes.
-    stale.push(`${PREFIX_DERIVED}${folderId}/${photoId}/medium.webp`);
-  }
-
-  // Checks the per-key failures and invalidates in one place; for hiding, the
-  // cached copy at the edge *is* the leak.
-  await deleteObjects(stale, 'old derivative(s)');
-
-  console.log('Photo hidden flag set', { photoId, folderId, hidden, stale });
-
-  return json(200, presentPhoto({ ...photo, hidden }, true, true));
-}
-
-/**
- * Creates the orphan roll the first time something needs it.
- *
- * Lazily rather than from a bootstrap script: a fresh stack should work with
- * nothing run against it first, and a roll that has never received an orphan is
- * a row in the folder list that only ever confuses. The read-then-write is not
- * atomic, but the id is fixed and the loser of a race rewrites the same item —
- * the only casualty would be a `photoCount` reset, which the moves that follow
- * then re-increment from zero. Nothing about a photo depends on it.
- */
-async function ensureOrphanFolder(): Promise<void> {
-  if (await db.getFolder(ORPHAN_FOLDER_ID)) return;
-  const now = new Date().toISOString();
-  await db.putFolder(
-    {
-      folderId: ORPHAN_FOLDER_ID,
-      name: ORPHAN_FOLDER_NAME,
-      createdAt: now,
-      updatedAt: now,
-      photoCount: 0,
-    },
-    // getFolder is eventually consistent and a plain Put is a whole-item
-    // overwrite, so without this a stale read partway through a 12-chunk
-    // orphaning re-creates the folder at photoCount 0 and drops its cover.
-    // Losing the race is the expected outcome, not an error.
-    { ifAbsent: true },
-  );
-}
-
-/** First key under any prefix the folder owns, or null if it has none. */
-async function firstObjectUnder(folderId: string): Promise<string | null> {
-  // `f/hidden/<folderId>/` is listed separately because it is not under
-  // `f/<folderId>/` — that is the entire point of the hidden prefix, and it also
-  // means a plain three-prefix sweep would miss a hidden frame's derivatives.
-  for (const prefix of [
-    `${PREFIX_DERIVED}${folderId}/`,
-    `${PREFIX_DERIVED}hidden/${folderId}/`,
-    `${PREFIX_ORIGINALS}${folderId}/`,
-    `${PREFIX_RAW}${folderId}/`,
-  ]) {
-    const res = await s3.send(
-      new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix, MaxKeys: 1 }),
-    );
-    if (res.Contents?.length) return res.Contents[0].Key!;
-  }
-  return null;
-}
-
-/**
- * Whole batch, one report. A 404 for frame 12 would hide the thirty that did
- * move, so every outcome is per photo and the caller decides what to retry —
- * including when the batch is one photo long, so the shape never changes under
- * the client.
- */
-async function movePhotos(event: APIGatewayProxyEventV2, folderId: string) {
-  const { toFolderId, photoIds } = parseBody<{
-    toFolderId?: string;
-    photoIds?: string[];
-  }>(event);
-
-  if (!toFolderId) throw new HttpError(400, 'toFolderId is required');
-  if (toFolderId === folderId) throw new HttpError(400, 'Already in that folder');
-  if (!Array.isArray(photoIds) || !photoIds.length) {
-    throw new HttpError(400, 'photoIds[] is required');
-  }
-  // Far below createUploads' 200: that one mints presigned URLs locally, while
-  // every photo here is a query, a transaction, up to two CopyObjects and a
-  // delete, all serial, against a 15-second Lambda timeout. Ten leaves real
-  // headroom: a batch killed mid-loop reports nothing, and a move interrupted
-  // between the record and the copy strands bytes under the old prefix.
-  if (photoIds.length > 10) throw new HttpError(400, 'Batch limited to 10 photos');
-
-  const source = await db.getFolder(folderId);
-  if (!source) throw new HttpError(404, 'Folder not found');
-  if (toFolderId === ORPHAN_FOLDER_ID) await ensureOrphanFolder();
-  if (!(await db.getFolder(toFolderId))) {
-    throw new HttpError(404, 'Destination folder not found');
-  }
-
-  const moved: string[] = [];
+  const changed: string[] = [];
+  const already: string[] = [];
   const failed: Array<{ photoId: string; message: string }> = [];
 
   for (const photoId of new Set(photoIds)) {
     try {
-      await movePhotoAndObjects(source, photoId, toFolderId);
-      moved.push(photoId);
+      if (attach) {
+        const photo = await db.getPhoto(photoId);
+        if (!photo) throw new HttpError(404, 'Photo not found');
+        (await db.attachPhoto(folderId, photo) ? changed : already).push(photoId);
+      } else {
+        (await db.detachPhoto(folder, photoId) ? changed : already).push(photoId);
+      }
     } catch (err) {
-      console.error('Move failed', { photoId, from: folderId, to: toFolderId, err });
+      console.error('Membership change failed', { photoId, folderId, attach, err });
       failed.push({ photoId, message: (err as Error).message });
     }
   }
 
-  return json(200, { moved, failed });
+  console.log('Membership changed', { folderId, attach, changed, already, failed });
+  return json(200, { changed, already, failed });
 }
 
 async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
@@ -643,29 +460,31 @@ async function openShare(token: string) {
   const folder = await db.getFolder(share.folderId);
   if (!folder) throw new HttpError(404, 'This link has expired or does not exist');
 
+  // Still building. `photoCount` below reads off the filtered list, which is why
+  // the share's count is right for free.
   const photos = (await db.listPhotos(share.folderId))
-    // Still building, or hidden. The hidden ones are unreachable anyway — their
-    // bytes are outside this cookie's prefix — so this is only about not showing
-    // a viewer a frame-shaped hole. `photoCount` below reads off the filtered
-    // list, which is why the share's count is right for free.
-    .filter((p) => p.derivedAt && !p.hidden)
+    .filter((p) => p.derivedAt)
     .sort(byTakenAtDesc);
 
-  const cookies = await signFolderCookies(
-    folderResource(DOMAIN, share.folderId),
-    SHARE_TTL,
-  );
-
-  return json(
-    200,
-    {
-      folder: { name: folder.name, photoCount: photos.length },
-      permissions: { allowDownload: share.allowDownload },
-      // Shares are JPEG-only, always: RAW never leaves the owner's own view.
-      photos: photos.map((p) => presentPhoto(p, share.allowDownload, false)),
-    },
-    cookieHeaders(cookies, SHARE_TTL),
-  );
+  // No cookie. A photo is no longer under a folder prefix, so there is no
+  // wildcard that names this roll and nothing else — each derivative is granted
+  // on its own, which is a tighter capability than the folder-wide cookie this
+  // replaces. The trade is that detaching a frame no longer revokes anything
+  // already issued: those URLs stop working when they expire, not before.
+  return json(200, {
+    folder: { name: folder.name, photoCount: photos.length },
+    permissions: { allowDownload: share.allowDownload },
+    // Shares are JPEG-only, always: RAW never leaves the owner's own view.
+    photos: await Promise.all(
+      photos.map((p) =>
+        presentPhoto(p, {
+          allowDownload: share.allowDownload,
+          allowRaw: false,
+          sign: true,
+        }),
+      ),
+    ),
+  });
 }
 
 /**
@@ -679,13 +498,16 @@ async function shareDownload(token: string, photoId: string) {
 
   if (!share.allowDownload) throw new HttpError(403, 'Download not allowed');
 
-  const photo = await db.findPhoto(share.folderId, photoId);
+  // Membership is checked here rather than inferred from the photo, because the
+  // photo no longer knows which rolls it is in. Without this a share could name
+  // any photoId in the library and get an original back.
+  const inFolder = (await db.listPhotoMemberships(photoId)).some(
+    (m) => m.folderId === share.folderId,
+  );
+  const photo = inFolder ? await db.getPhoto(photoId) : null;
+  // The same 404 as a missing photo, deliberately: a share must not be able to
+  // tell "in someone else's roll" from "never existed".
   if (!photo) throw new HttpError(404, 'Photo not found');
-  // Originals never move — they are reached by a per-object signed URL, not by
-  // the cookie — so this is the one place hiding is enforced in code. The same
-  // 404 as a missing photo, deliberately: a share must not be able to tell
-  // "hidden" from "never existed".
-  if (photo.hidden) throw new HttpError(404, 'Photo not found');
 
   return json(200, await downloadPayload(photo, false));
 }
@@ -695,8 +517,8 @@ async function downloadPayload(photo: Photo, wantRaw: boolean) {
   if (!ext) throw new HttpError(404, wantRaw ? 'No RAW for this photo' : 'No original');
 
   const key = wantRaw
-    ? rawKey(photo.folderId, photo.photoId, ext)
-    : originalKey(photo.folderId, photo.photoId, ext);
+    ? rawKey(photo.photoId, ext)
+    : originalKey(photo.photoId, ext);
 
   return {
     url: await signObjectUrl(key, DOWNLOAD_TTL),
@@ -786,7 +608,7 @@ async function shareCover(token: string): Promise<APIGatewayProxyStructuredResul
     .send(
       new GetObjectCommand({
         Bucket: BUCKET,
-        Key: derivedKey(folder.folderId, folder.coverPhotoId, 'large'),
+        Key: derivedKey(folder.coverPhotoId, 'large'),
       }),
     )
     .catch(() => {
@@ -865,25 +687,20 @@ const routes: Array<{
     admin: true,
     handle: async (event, [folderId]) => {
       const patch = parseBody<Partial<Folder>>(event);
-      // The orphan roll is a fixture, and its name is the only thing telling the
-      // owner why photos are sitting in it. A cover is harmless, so only the
-      // rename is refused rather than the whole patch.
-      if (folderId === ORPHAN_FOLDER_ID && patch.name !== undefined) {
-        throw new HttpError(409, 'The orphaned roll cannot be renamed');
-      }
       // setExpression only skips `undefined`, so without this an empty or
       // whitespace name writes through and leaves a roll with no title at all.
       // createFolder has always refused one; this is the same rule on update.
       if (patch.name !== undefined && !patch.name?.trim()) {
         throw new HttpError(400, 'name cannot be empty');
       }
-      // `shareCover` streams the cover with no cookie at all, so a hidden frame
-      // named here would be published at 2400px to anyone holding the share URL
-      // — undoing the hide through a route that never looks at the photo record.
+      // `shareCover` streams the cover with no cookie at all, so a frame that is
+      // not in this roll would be published at 2400px to anyone holding its share
+      // URL — through a route that only ever looks at the folder record.
       if (patch.coverPhotoId !== undefined) {
-        const cover = await db.findPhoto(folderId, patch.coverPhotoId);
-        if (!cover) throw new HttpError(404, 'Photo not found');
-        if (cover.hidden) throw new HttpError(409, 'A hidden frame cannot be a cover');
+        const inFolder = (await db.listPhotoMemberships(patch.coverPhotoId)).some(
+          (m) => m.folderId === folderId,
+        );
+        if (!inFolder) throw new HttpError(404, 'Photo not found in this roll');
       }
       await db.updateFolder(folderId, {
         name: patch.name?.trim(),
@@ -897,27 +714,12 @@ const routes: Array<{
     pattern: /^\/api\/folders\/([\w-]+)$/,
     admin: true,
     handle: async (_e, [folderId]) => {
-      // It is where photos go when their roll is deleted, so deleting it is the
-      // one way this API could still lose an image.
-      if (folderId === ORPHAN_FOLDER_ID) {
-        throw new HttpError(409, 'The orphaned roll cannot be deleted');
-      }
-      const photos = await db.listPhotos(folderId);
-      if (photos.length > 0) {
-        throw new HttpError(409, `Folder still holds ${photos.length} photos`);
-      }
-      // An empty photo list is not proof the folder is empty. A move writes the
-      // record before it copies the bytes, so a batch killed mid-flight — the
-      // Lambda has 15 seconds — leaves records pointing at the destination while
-      // the objects sit here. Deleting the folder then removes the last thing
-      // naming that prefix, and only `aws s3 ls` can find the frame again.
-      const stranded = await firstObjectUnder(folderId);
-      if (stranded) {
-        throw new HttpError(
-          409,
-          `Folder still holds objects in S3 (${stranded}); a move may have been interrupted`,
-        );
-      }
+      // No refusal, and nothing to check. This route used to guard twice over —
+      // once on the photo count, once on a sweep of the folder's S3 prefixes for
+      // objects an interrupted move had stranded — because deleting a folder was
+      // the one way this API could still lose a photograph. A folder holds
+      // pointers now. `deleteFolder` drops them along with the roll's shares, and
+      // every frame stays in the library.
       await db.deleteFolder(folderId);
       return json(204, {});
     },
@@ -926,11 +728,8 @@ const routes: Array<{
     method: 'GET',
     pattern: /^\/api\/folders\/([\w-]+)\/photos$/,
     admin: true,
-    handle: async (_e, [folderId]) => {
-      const photos = (await db.listPhotos(folderId)).sort(byTakenAtDesc);
-      // The owner always has both permissions on their own library.
-      return json(200, { photos: photos.map((p) => presentPhoto(p, true, true)) });
-    },
+    handle: async (_e, [folderId]) =>
+      json(200, { photos: await asAdmin(await db.listPhotos(folderId)) }),
   },
   {
     method: 'POST',
@@ -939,35 +738,39 @@ const routes: Array<{
     handle: (event, [folderId]) => createUploads(event, folderId),
   },
   {
+    // Attach and detach. Not the same thing as destroying the photograph, which
+    // is `DELETE /api/photos/<id>` and is the only route that can lose an image.
+    method: 'PUT',
+    pattern: /^\/api\/folders\/([\w-]+)\/photos$/,
+    admin: true,
+    handle: (event, [folderId]) => setMembership(event, folderId, true),
+  },
+  {
     method: 'DELETE',
-    pattern: /^\/api\/folders\/([\w-]+)\/photos\/([\w-]+)$/,
+    pattern: /^\/api\/folders\/([\w-]+)\/photos$/,
     admin: true,
-    handle: (_e, [folderId, photoId]) => deletePhotoAndObjects(folderId, photoId),
+    handle: (event, [folderId]) => setMembership(event, folderId, false),
+  },
+
+  // --- the library
+  {
+    method: 'GET',
+    pattern: /^\/api\/photos$/,
+    admin: true,
+    handle: async () => json(200, { photos: await asAdmin(await db.listLibrary()) }),
   },
   {
-    // Per photo, not a batch: each one is two CopyObjects and a delete of a few
-    // hundred KB, and the client's bulk hide is a loop of these — so unlike a
-    // move, nothing here has to finish inside one 15-second invocation.
-    method: 'PATCH',
-    pattern: /^\/api\/folders\/([\w-]+)\/photos\/([\w-]+)$/,
+    method: 'DELETE',
+    pattern: /^\/api\/photos\/([\w-]+)$/,
     admin: true,
-    handle: (event, [folderId, photoId]) => setPhotoHidden(event, folderId, photoId),
-  },
-  {
-    // Bulk only. The plan named a per-photo route too, but multi-select landed
-    // first, so `{ photoIds: [one] }` already covers it and a second path would
-    // just be a second set of semantics to keep in step.
-    method: 'POST',
-    pattern: /^\/api\/folders\/([\w-]+)\/photos\/move$/,
-    admin: true,
-    handle: (event, [folderId]) => movePhotos(event, folderId),
+    handle: (_e, [photoId]) => destroyPhoto(photoId),
   },
   {
     method: 'POST',
-    pattern: /^\/api\/folders\/([\w-]+)\/photos\/([\w-]+)\/(original|raw)$/,
+    pattern: /^\/api\/photos\/([\w-]+)\/(original|raw)$/,
     admin: true,
-    handle: async (_e, [folderId, photoId, kind]) => {
-      const photo = await db.findPhoto(folderId, photoId);
+    handle: async (_e, [photoId, kind]) => {
+      const photo = await db.getPhoto(photoId);
       if (!photo) throw new HttpError(404, 'Photo not found');
       return json(200, await downloadPayload(photo, kind === 'raw'));
     },

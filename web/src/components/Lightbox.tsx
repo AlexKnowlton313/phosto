@@ -9,10 +9,8 @@ interface Props {
   onDownload: (photo: PhotoView, kind: 'original' | 'raw') => void;
   /** Only supplied in the admin view; viewers never see a delete control. */
   onDelete?: (photo: PhotoView) => void;
-  /** Admin only, same as onDelete. */
+  /** Admin only, same as onDelete. Absent in the library, which is not a roll. */
   onSetCover?: (photo: PhotoView) => void;
-  /** Admin only, same as onDelete. */
-  onSetHidden?: (photo: PhotoView, hidden: boolean) => void;
 }
 
 export function Lightbox({
@@ -23,7 +21,6 @@ export function Lightbox({
   onDownload,
   onDelete,
   onSetCover,
-  onSetHidden,
 }: Props) {
   const photo = photos[index];
   const dialog = useRef<HTMLDivElement>(null);
@@ -123,16 +120,10 @@ export function Lightbox({
             Download RAW
           </button>
         )}
-        {/* A photo with no derivative has no thumb.webp to use as a cover, and a
-            hidden one would put the frame back on the roll card it was taken off. */}
-        {onSetCover && photo.ready && !photo.hidden && (
+        {/* A photo with no derivative has no thumb.webp to use as a cover. */}
+        {onSetCover && photo.ready && (
           <button className="btn" onClick={() => onSetCover(photo)}>
             Set as cover
-          </button>
-        )}
-        {onSetHidden && (
-          <button className="btn" onClick={() => onSetHidden(photo, !photo.hidden)}>
-            {photo.hidden ? 'Unhide' : 'Hide'}
           </button>
         )}
         {onDelete && (

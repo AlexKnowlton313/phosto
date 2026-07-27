@@ -5,37 +5,30 @@ export const PREFIX_ORIGINALS = process.env.PREFIX_ORIGINALS ?? 'orig/';
 export const PREFIX_RAW = process.env.PREFIX_RAW ?? 'raw/';
 
 /**
- * `hidden` inserts a literal segment *before* the folder id, which is the whole
- * enforcement: a share cookie is signed for `f/<folderId>/*` and the literal
- * prefix diverges before the wildcard, so no share on that folder can reach a
- * hidden frame — including cookies already sitting in a browser. The admin
- * cookie covers `f/*` and so still reaches both. Folder ids are server-minted,
- * either `randomUUID()` or the one literal `orphaned`, so nothing can collide
- * with this segment.
+ * No folder id in any key, and no `hidden` segment either.
+ *
+ * Both used to be load-bearing: the folder scoped a share cookie, and `hidden`
+ * moved bytes out from under one. Neither survives a photo that can be in
+ * several rolls at once — one set of bytes cannot sit under two prefixes, and a
+ * CloudFront policy allows exactly one Resource statement. Shares are granted
+ * per object instead, by `signObjectUrl`, so the key no longer has to encode who
+ * may read it: the signature does.
  */
-export const derivedKey = (
-  folderId: string,
-  photoId: string,
-  name: DerivativeName,
-  hidden = false,
-) => `${PREFIX_DERIVED}${hidden ? 'hidden/' : ''}${folderId}/${photoId}/${name}.webp`;
+export const derivedKey = (photoId: string, name: DerivativeName) =>
+  `${PREFIX_DERIVED}${photoId}/${name}.webp`;
 
-export const originalKey = (folderId: string, photoId: string, ext: string) =>
-  `${PREFIX_ORIGINALS}${folderId}/${photoId}.${ext.toLowerCase()}`;
+export const originalKey = (photoId: string, ext: string) =>
+  `${PREFIX_ORIGINALS}${photoId}.${ext.toLowerCase()}`;
 
-export const rawKey = (folderId: string, photoId: string, ext: string) =>
-  `${PREFIX_RAW}${folderId}/${photoId}.${ext.toLowerCase()}`;
-
-/** The resource pattern a share cookie is scoped to. */
-export const folderResource = (domain: string, folderId: string) =>
-  `https://${domain}/${PREFIX_DERIVED}${folderId}/*`;
+export const rawKey = (photoId: string, ext: string) =>
+  `${PREFIX_RAW}${photoId}.${ext.toLowerCase()}`;
 
 /**
- * Parses `orig/<folderId>/<photoId>.<ext>` or `raw/<folderId>/<photoId>.<ext>`.
- * Returns null for anything else, including the derivative prefix.
+ * Parses `orig/<photoId>.<ext>` or `raw/<photoId>.<ext>`. Returns null for
+ * anything else, including the derivative prefix and any surviving key from the
+ * old folder-scoped layout — those carry a `/` in `rest` and no longer match.
  */
 export function parseSourceKey(key: string): {
-  folderId: string;
   photoId: string;
   ext: string;
   isRaw: boolean;
@@ -45,11 +38,11 @@ export function parseSourceKey(key: string): {
   if (!isRaw && !key.startsWith(PREFIX_ORIGINALS)) return null;
 
   const rest = key.slice(prefix.length);
-  const match = /^([^/]+)\/([^/.]+)\.([A-Za-z0-9]+)$/.exec(rest);
+  const match = /^([^/.]+)\.([A-Za-z0-9]+)$/.exec(rest);
   if (!match) return null;
 
-  const [, folderId, photoId, ext] = match;
-  return { folderId, photoId, ext: ext.toLowerCase(), isRaw };
+  const [, photoId, ext] = match;
+  return { photoId, ext: ext.toLowerCase(), isRaw };
 }
 
 export const extensionOf = (filename: string) =>

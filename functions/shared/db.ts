@@ -1,6 +1,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
+  BatchGetCommand,
   DeleteCommand,
   GetCommand,
   PutCommand,
@@ -8,7 +9,7 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
-import type { Folder, Photo, Share } from './types.js';
+import type { Folder, Membership, Photo, Share } from './types.js';
 
 const TABLE = process.env.TABLE_NAME!;
 
@@ -18,15 +19,29 @@ export const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 
 const folderPk = (folderId: string) => `FOLDER#${folderId}`;
 const sharePk = (tokenHash: string) => `SHARE#${tokenHash}`;
+const photoPk = (photoId: string) => `PHOTO#${photoId}`;
 
 /**
+ * Every photo hangs off one `gsi1` partition, which is what makes "all photos" a
+ * single query now that no folder owns anything.
+ *
+ * ponytail: single LIB partition, bucket by year if the library outgrows one query.
+ * At 835 photos it is one page and a fraction of a read unit.
+ */
+const LIBRARY_PK = 'LIB';
+
+/**
+ * A membership's sort position inside its folder, and the reason the `PHOTO#`
+ * prefix is here: `gsi1pk = FOLDER#<id>` now holds both the folder's shares
+ * (`SHARE#…`) and its photos, so each is a `begins_with` query on the same
+ * overloaded partition.
+ *
  * Keyed on uploadedAt, not takenAt, deliberately. The derive Lambda often corrects
  * takenAt once it has read EXIF, and a sort key cannot be updated in place — it
- * would mean delete-then-put on every photo. uploadedAt never changes, so the key
- * is stable and callers sort by takenAt after reading. Folders hold hundreds to a
- * few thousand photos, so that sort is free.
+ * would mean delete-then-put on every membership the photo has. uploadedAt never
+ * changes, so the key is stable and callers sort by takenAt after reading.
  */
-const photoSk = (uploadedAt: string, photoId: string) =>
+const membershipGsi1sk = (uploadedAt: string, photoId: string) =>
   `PHOTO#${uploadedAt}#${photoId}`;
 
 /**
@@ -132,9 +147,10 @@ export async function clearCover(folderId: string): Promise<void> {
 }
 
 /**
- * The photoCount bump as a bare command shape, so `movePhoto` can put the same
- * guarded expression inside its transaction rather than restating it. The
- * condition is what makes a move fail cleanly when a folder is deleted mid-flight.
+ * The photoCount bump as a bare command shape, so `attachPhoto` and `detachPhoto`
+ * can put the same guarded expression inside their transactions rather than
+ * restating it. The condition is what makes a membership change fail cleanly when
+ * the folder is deleted mid-flight.
  */
 const photoCountUpdate = (folderId: string, delta: number, extra = '') => ({
   TableName: TABLE,
@@ -149,15 +165,33 @@ export async function bumpPhotoCount(folderId: string, delta: number): Promise<v
 }
 
 /**
- * Takes the folder's shares with it. A share hangs off `SHARE#<tokenHash>` with
- * only a gsi1 pointer back at the folder, so dropping the META item alone leaves
- * rows that mean nothing until their TTL fires — up to 365 days. Cascading here
- * rather than in the route so no later caller can delete a folder and forget.
- * Deletion is restricted to empty folders, so the share list is small.
+ * Takes the folder's shares and its memberships with it — never a photograph.
+ *
+ * Both cascades exist for the same reason: a share hangs off `SHARE#<tokenHash>`
+ * and a membership off `PHOTO#<photoId>`, each with only a gsi1 pointer back at
+ * the folder, so dropping the META item alone leaves rows that name a folder that
+ * is gone. Cascading here rather than in the route so no later caller can delete a
+ * folder and forget.
+ *
+ * This is what used to need the orphan roll. A folder holds pointers, not images,
+ * so deleting one now removes pointers — the photos stay in the library, reachable
+ * from "All photos" and from any other roll they are in.
+ *
+ * ponytail: serial deletes, one round trip each. A 200-frame roll is ~2s inside a
+ * 15s budget; switch to BatchWriteItem in 25s if rolls get much larger.
  */
 export async function deleteFolder(folderId: string): Promise<void> {
   for (const share of await listSharesForFolder(folderId)) {
     await deleteShare(share.tokenHash);
+  }
+
+  for (const membership of await listFolderMemberships(folderId)) {
+    await ddb.send(
+      new DeleteCommand({
+        TableName: TABLE,
+        Key: { pk: photoPk(membership.photoId), sk: folderPk(folderId) },
+      }),
+    );
   }
 
   await ddb.send(
@@ -172,71 +206,134 @@ export async function putPhoto(photo: Photo): Promise<void> {
     new PutCommand({
       TableName: TABLE,
       Item: {
-        pk: folderPk(photo.folderId),
-        sk: photoSk(photo.uploadedAt, photo.photoId),
+        pk: photoPk(photo.photoId),
+        sk: 'META',
+        gsi1pk: LIBRARY_PK,
+        gsi1sk: `${photo.uploadedAt}#${photo.photoId}`,
         ...photo,
       },
     }),
   );
 }
 
-export async function listPhotos(folderId: string): Promise<Photo[]> {
-  const items: Photo[] = [];
+/**
+ * A point read at last. This was a filtered query across a folder partition for as
+ * long as `pk` carried the folder — the documented "first thing that stops
+ * scaling". The photo id is the partition key now, so it costs one read unit
+ * whatever the library is doing.
+ */
+export async function getPhoto(photoId: string): Promise<Photo | null> {
+  const res = await ddb.send(
+    new GetCommand({ TableName: TABLE, Key: { pk: photoPk(photoId), sk: 'META' } }),
+  );
+  return (res.Item as Photo) ?? null;
+}
+
+/** Pages a gsi1 partition in full, newest first. */
+async function queryGsi1(pk: string, skPrefix?: string): Promise<unknown[]> {
+  const items: unknown[] = [];
   let cursor: Record<string, unknown> | undefined;
 
   do {
     const res = await ddb.send(
       new QueryCommand({
         TableName: TABLE,
-        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-        ExpressionAttributeValues: { ':pk': folderPk(folderId), ':prefix': 'PHOTO#' },
+        IndexName: 'gsi1',
+        KeyConditionExpression: skPrefix
+          ? 'gsi1pk = :pk AND begins_with(gsi1sk, :prefix)'
+          : 'gsi1pk = :pk',
+        ExpressionAttributeValues: {
+          ':pk': pk,
+          ...(skPrefix ? { ':prefix': skPrefix } : {}),
+        },
         ExclusiveStartKey: cursor,
         ScanIndexForward: false,
       }),
     );
-    items.push(...((res.Items ?? []) as Photo[]));
+    items.push(...(res.Items ?? []));
     cursor = res.LastEvaluatedKey;
   } while (cursor);
 
   return items;
 }
 
-export async function findPhoto(
-  folderId: string,
-  photoId: string,
-): Promise<Photo | null> {
-  // photoId is not part of the sort key prefix, so this is a filtered query rather
-  // than a point read. Folders are small enough that it stays a single page.
+/** Every photo, in no folder in particular — what "All photos" renders. */
+export const listLibrary = () => queryGsi1(LIBRARY_PK) as Promise<Photo[]>;
+
+/** The memberships of one folder. Ordered, but they carry no photo detail. */
+export const listFolderMemberships = (folderId: string) =>
+  queryGsi1(folderPk(folderId), 'PHOTO#') as Promise<Membership[]>;
+
+/** The folders one photo is in — what a delete has to unpick. */
+export async function listPhotoMemberships(photoId: string): Promise<Membership[]> {
   const res = await ddb.send(
     new QueryCommand({
       TableName: TABLE,
       KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-      FilterExpression: 'photoId = :photoId',
-      ExpressionAttributeValues: {
-        ':pk': folderPk(folderId),
-        ':prefix': 'PHOTO#',
-        ':photoId': photoId,
-      },
+      ExpressionAttributeValues: { ':pk': photoPk(photoId), ':prefix': 'FOLDER#' },
     }),
   );
-  return ((res.Items ?? [])[0] as Photo) ?? null;
+  return (res.Items ?? []) as Membership[];
 }
 
 /**
- * Returns false when the record is no longer there — deleted, or moved to another
- * folder, since `pk` carries the folder.
+ * Reads many photos by id. `BatchGetItem` caps at 100 keys and may hand some back
+ * in `UnprocessedKeys` under throttling, so both are handled here rather than at
+ * each call site. Order is not preserved — callers sort by takenAt anyway.
+ */
+async function batchGetPhotos(photoIds: string[]): Promise<Photo[]> {
+  const found: Photo[] = [];
+
+  for (let i = 0; i < photoIds.length; i += 100) {
+    let keys = photoIds
+      .slice(i, i + 100)
+      .map((photoId) => ({ pk: photoPk(photoId), sk: 'META' }));
+
+    while (keys.length) {
+      const res = await ddb.send(
+        new BatchGetCommand({ RequestItems: { [TABLE]: { Keys: keys } } }),
+      );
+      found.push(...((res.Responses?.[TABLE] ?? []) as Photo[]));
+      keys = (res.UnprocessedKeys?.[TABLE]?.Keys ?? []) as typeof keys;
+    }
+  }
+
+  return found;
+}
+
+/**
+ * One folder's photos: its memberships, then the photo records they point at.
+ *
+ * Two round trips where it used to be one, because the photo no longer lives in
+ * the folder's partition. The alternative — copying photo fields onto every
+ * membership — would mean every EXIF correction from derive fanning out to each
+ * roll the frame is in, which is the trade that goes wrong later.
+ *
+ * A membership whose photo has been deleted returns nothing from the BatchGet and
+ * simply drops out; `deletePhoto` unpicks memberships first, so that is a
+ * mid-flight read rather than a lasting state.
+ */
+export async function listPhotos(folderId: string): Promise<Photo[]> {
+  const memberships = await listFolderMemberships(folderId);
+  if (!memberships.length) return [];
+  return batchGetPhotos(memberships.map((m) => m.photoId));
+}
+
+/**
+ * Returns false when the record is no longer there — deleted while the caller was
+ * working. (It can no longer be "moved": nothing about a photo's key depends on a
+ * folder any more.)
  *
  * The condition is the whole point. UpdateItem *upserts*, and every caller here
  * holds an item it read earlier: derive reads the photo, then spends seconds
  * decoding a RAF. Delete the frame in that window and an unguarded update
- * recreates the row from its key plus the patch — no `photoId`, no `basename`,
- * no `folderId`. `listPhotos` returns it because the sort key still matches,
- * the grid renders `/f/undefined/undefined/thumb.webp`, and `findPhoto` filters
- * on `photoId` so no route can delete it again. `updateFolder` has always
- * carried this; the photo version did not.
+ * recreates the row from its key plus the patch — no `photoId`, no `basename`.
+ * `listLibrary` returns it because the gsi1 projection still matches, and the grid
+ * renders `/f/undefined/thumb.webp`. `updateFolder` has always carried this; the
+ * photo version did not.
  */
 export async function updatePhoto(
-  photo: Photo,
+  photoId: string,
   patch: Partial<Photo>,
 ): Promise<boolean> {
   if (!hasPatch(patch)) return true;
@@ -245,7 +342,7 @@ export async function updatePhoto(
     await ddb.send(
       new UpdateCommand({
         TableName: TABLE,
-        Key: { pk: folderPk(photo.folderId), sk: photoSk(photo.uploadedAt, photo.photoId) },
+        Key: { pk: photoPk(photoId), sk: 'META' },
         ...setExpression(patch),
         ConditionExpression: 'attribute_exists(pk)',
       }),
@@ -254,79 +351,135 @@ export async function updatePhoto(
   } catch (err) {
     if ((err as Error).name !== 'ConditionalCheckFailedException') throw err;
     console.warn('Photo record vanished before its update landed', {
-      folderId: photo.folderId,
-      photoId: photo.photoId,
+      photoId,
       patch: Object.keys(patch),
     });
     return false;
   }
 }
 
-/**
- * Repoints one photo record at another folder, atomically.
- *
- * `pk` carries the folder, so this crosses partitions and cannot be an update —
- * it is a delete plus a put. Both photoCounts move with it in the same
- * transaction, so a failure can never leave a photo counted twice or listed in
- * two folders. The sort key is unchanged: `uploadedAt` is half of it and is
- * deliberately not `takenAt` (see `photoSk`), so rewriting it would reorder the
- * photo for nothing.
- *
- * Moving the record is only the first step of a move — the S3 objects still have
- * to follow — so this is not exported as a whole-move primitive.
- */
-export async function movePhoto(
-  source: Folder,
-  photo: Photo,
-  toFolderId: string,
-): Promise<void> {
-  const key = { sk: photoSk(photo.uploadedAt, photo.photoId) };
+// ----------------------------------------------------------------- memberships
 
-  await ddb.send(
-    new TransactWriteCommand({
-      TransactItems: [
-        { Delete: { TableName: TABLE, Key: { pk: folderPk(photo.folderId), ...key } } },
-        {
-          Put: {
-            TableName: TABLE,
-            Item: {
-              // `photo` is the raw item off a Query, so it still carries the
-              // source `pk` — spread it FIRST or it overwrites the destination
-              // key and the transaction becomes two operations on one item,
-              // which DynamoDB rejects outright. The Photo type does not
-              // declare pk/sk, so tsc cannot catch the wrong order here.
-              ...photo,
-              pk: folderPk(toFolderId),
-              ...key,
-              folderId: toFolderId,
-              // Dropped, not carried: the derivatives under the destination
-              // prefix do not exist until the copy of the original retriggers
-              // the derive Lambda. Claiming ready here would point the grid at
-              // keys that are not written yet.
-              derivedAt: undefined,
-            },
-          },
-        },
-        {
-          Update: photoCountUpdate(
-            photo.folderId,
-            -1,
-            // A cover pointing into another folder renders as a broken tile.
-            source.coverPhotoId === photo.photoId ? ' REMOVE coverPhotoId' : '',
-          ),
-        },
-        { Update: photoCountUpdate(toFolderId, 1) },
-      ],
-    }),
+/**
+ * Was the transaction cancelled *only* because the guarded item already existed
+ * (or already didn't)?
+ *
+ * `TransactWriteItems` reports per-item outcomes in `CancellationReasons`,
+ * positionally, and throws one aggregate error rather than distinguishing them.
+ * Attach and detach each guard two items: the membership, whose condition failing
+ * means the caller asked for a state that already holds, and the folder, whose
+ * condition failing means it was deleted underneath us. Only the first is a no-op.
+ */
+function isMembershipNoop(err: unknown): boolean {
+  const reasons = (err as { CancellationReasons?: Array<{ Code?: string }> })
+    .CancellationReasons;
+  if ((err as Error).name !== 'TransactionCanceledException' || !reasons) return false;
+  return (
+    reasons[0]?.Code === 'ConditionalCheckFailed' &&
+    reasons.slice(1).every((r) => r.Code === 'None')
   );
 }
 
-export async function deletePhoto(photo: Photo): Promise<void> {
+/**
+ * Puts one photo in one folder. Returns false if it was already there.
+ *
+ * Atomic with the count, so no failure can leave a roll claiming a number its
+ * membership list disagrees with. The `attribute_not_exists` guard is what makes
+ * a repeated attach idempotent rather than a double count — worth having because
+ * the admin can select overlapping sets and press Add twice, and because a photo
+ * being in a roll is the whole point of the model now.
+ */
+export async function attachPhoto(
+  folderId: string,
+  photo: Photo,
+): Promise<boolean> {
+  const membership: Membership = {
+    photoId: photo.photoId,
+    folderId,
+    uploadedAt: photo.uploadedAt,
+  };
+
+  try {
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: TABLE,
+              Item: {
+                pk: photoPk(photo.photoId),
+                sk: folderPk(folderId),
+                gsi1pk: folderPk(folderId),
+                gsi1sk: membershipGsi1sk(photo.uploadedAt, photo.photoId),
+                ...membership,
+              },
+              ConditionExpression: 'attribute_not_exists(pk)',
+            },
+          },
+          { Update: photoCountUpdate(folderId, 1) },
+        ],
+      }),
+    );
+    return true;
+  } catch (err) {
+    if (!isMembershipNoop(err)) throw err;
+    return false;
+  }
+}
+
+/**
+ * Takes one photo out of one folder. Returns false if it was not in it.
+ *
+ * Never touches the photo or its bytes — that is the entire difference from the
+ * move this replaces, and why it needs no S3 work, no ordering rule and no batch
+ * cap. The cover is dropped in the same transaction when it named this frame, or
+ * the roll card goes on advertising a photo it no longer contains.
+ */
+export async function detachPhoto(folder: Folder, photoId: string): Promise<boolean> {
+  try {
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Delete: {
+              TableName: TABLE,
+              Key: { pk: photoPk(photoId), sk: folderPk(folder.folderId) },
+              ConditionExpression: 'attribute_exists(pk)',
+            },
+          },
+          {
+            Update: photoCountUpdate(
+              folder.folderId,
+              -1,
+              folder.coverPhotoId === photoId ? ' REMOVE coverPhotoId' : '',
+            ),
+          },
+        ],
+      }),
+    );
+    return true;
+  } catch (err) {
+    if (!isMembershipNoop(err)) throw err;
+    return false;
+  }
+}
+
+/**
+ * Destroys the photograph itself: every membership first, then the record.
+ *
+ * Memberships lead so that no folder is left listing a photo that has stopped
+ * existing — `listPhotos` would BatchGet a hole. Each detach is its own
+ * transaction because they span different folders and DynamoDB caps a transaction
+ * at 100 items; a photo in a handful of rolls makes this a handful of round trips.
+ */
+export async function deletePhoto(photoId: string): Promise<void> {
+  for (const membership of await listPhotoMemberships(photoId)) {
+    const folder = await getFolder(membership.folderId);
+    if (folder) await detachPhoto(folder, photoId);
+  }
+
   await ddb.send(
-    new DeleteCommand({
-      TableName: TABLE,
-      Key: { pk: folderPk(photo.folderId), sk: photoSk(photo.uploadedAt, photo.photoId) },
-    }),
+    new DeleteCommand({ TableName: TABLE, Key: { pk: photoPk(photoId), sk: 'META' } }),
   );
 }
 

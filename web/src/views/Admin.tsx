@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   adminApi,
-  ORPHAN_FOLDER_ID,
+  LIBRARY_ID,
   saveAs,
   uploadFile,
   type AppConfig,
   type FolderView,
+  type MembershipResult,
   type PhotoView,
   type ShareSummary,
 } from '../api';
@@ -20,9 +21,6 @@ import { Lightbox } from '../components/Lightbox';
 
 /** Enough to saturate a connection without starving the UI thread. */
 const UPLOAD_CONCURRENCY = 4;
-
-/** Mirrors the server's cap in `movePhotos`, which is bounded by a 15s timeout. */
-const MOVE_BATCH = 10;
 
 const relative = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
 
@@ -81,18 +79,21 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     allowDownload: boolean;
   }>();
   const [error, setError] = useState<string>();
-  // A chunked move runs for a minute on a full roll. Without a running count it
-  // is indistinguishable from a hang, and the user's next move is a reload.
+  // What a batch actually did — "Added 12 frame(s) to Iceland (3 already there)",
+  // or a running count while a long delete works through the selection. Cleared on
+  // every folder change below: it describes a roll the user may have left.
   const [status, setStatus] = useState<string>();
   const { selected, toggle, clear, retain } = useSelection();
   // A batch runs for seconds with no feedback of its own, which makes a second
   // click likely — and two concurrent loops are exactly the burst the 150ms gap
   // between downloads exists to avoid.
   const [batching, setBatching] = useState(false);
-  // Deliberately not persisted, and reset on every folder change below: hidden
-  // defaults to out of sight each time a roll is opened, which is the feature.
-  const [showHidden, setShowHidden] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // "All photos" is a pseudo-roll: it has no folder record, so it can't be
+  // renamed, shared, uploaded into or deleted, and there is nothing to detach
+  // from. Everything else about it is an ordinary contact sheet.
+  const isLibrary = folderId === LIBRARY_ID;
 
   // The signed cookies, not the JWT, are what let the browser load images.
   // Sequential on purpose: cover thumbnails render as soon as the folders land,
@@ -113,11 +114,23 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     return () => window.removeEventListener('hashchange', sync);
   }, []);
 
-  const current = folders?.find((f) => f.folderId === folderId);
+  const realFolder = folders?.find((f) => f.folderId === folderId);
+  // Synthesised so the whole detail view below can read `current.name` without
+  // branching on every line. `photoCount` is filled from the loaded sheet.
+  const current: FolderView | undefined = isLibrary
+    ? {
+        folderId: LIBRARY_ID,
+        name: 'All photos',
+        createdAt: '',
+        photoCount: photos?.length ?? 0,
+      }
+    : realFolder;
 
   const refresh = useCallback(async () => {
     if (!folderId) return;
-    const { photos } = await api.listPhotos(folderId);
+    const { photos } = await (folderId === LIBRARY_ID
+      ? api.listLibrary()
+      : api.listPhotos(folderId));
     setPhotos(photos);
     // Here rather than in removePhoto: any refresh can drop a photo, and a
     // selection holding a deleted id keeps the sheet in selection mode with
@@ -127,7 +140,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   }, [folderId, token]);
 
   const loadShares = useCallback(async () => {
-    if (!folderId) return;
+    // The library is not a folder, so it has no share links to list.
+    if (!folderId || folderId === LIBRARY_ID) return;
     setShares((await api.listShares(folderId)).shares);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderId, token]);
@@ -138,7 +152,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     setShares(undefined);
     setShareForm(undefined);
     setOpenIndex(undefined);
-    setShowHidden(false);
+    setStatus(undefined);
     clear();
     refresh().catch((err: Error) => setError(err.message));
     // Separate from `refresh` on purpose — that one is re-run every 4s while
@@ -255,8 +269,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   };
 
   const download = async (photo: PhotoView, kind: 'original' | 'raw') => {
-    if (!current) return;
-    saveAs(await api.download(current.folderId, photo.photoId, kind));
+    saveAs(await api.download(photo.photoId, kind));
   };
 
   const downloadSelected = async (kind: 'original' | 'raw') => {
@@ -268,7 +281,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       for (const photo of selectable(photos, selected, kind)) {
         // Signed one at a time, immediately before its download: DOWNLOAD_TTL is
         // five minutes and a long batch would outlive URLs minted up front.
-        saveAs(await api.download(current.folderId, photo.photoId, kind));
+        saveAs(await api.download(photo.photoId, kind));
         // Browsers silently drop a burst of programmatic downloads.
         await new Promise((r) => setTimeout(r, 150));
       }
@@ -281,21 +294,42 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     }
   };
 
-  const moveSelected = async () => {
-    if (!current || !folders) return;
-    const others = folders.filter((f) => f.folderId !== current.folderId);
-
-    // Matches the server's cap. Said here rather than letting the 400 come back,
-    // because by then the user has already picked a destination.
-    if (selected.size > MOVE_BATCH) {
-      setError(`Move up to ${MOVE_BATCH} frames at a time — ${selected.size} selected`);
-      return;
+  /**
+   * Reports what a membership change actually did.
+   *
+   * `failed` frames are named rather than counted: the selection is cleared
+   * either way, so a bare number would leave the owner unable to tell which ones
+   * to try again. `already` is not an error — it is how re-adding an overlapping
+   * selection behaves — but saying so beats silently reporting fewer than were
+   * selected.
+   */
+  const membershipNote = (
+    { changed, already, failed }: MembershipResult,
+    verb: string,
+    rollName: string,
+  ) => {
+    if (failed.length > 0) {
+      const names = failed.map(
+        (f) => photos?.find((p) => p.photoId === f.photoId)?.basename ?? f.photoId,
+      );
+      return `${verb} ${changed.length}, but ${failed.length} failed: ${names.join(', ')}`;
     }
+    const skipped = already.length > 0 ? ` (${already.length} already there)` : '';
+    return `${verb} ${changed.length} frame(s) ${verb === 'Removed' ? 'from' : 'to'} ${rollName}${skipped}`;
+  };
 
+  /**
+   * Puts the selection into another roll. A frame can be in as many rolls as you
+   * like, so this adds rather than moves — it leaves the current roll untouched,
+   * and there is no destination it could fail to reach.
+   */
+  const addToRoll = async () => {
+    if (!folders?.length) return;
     // A numbered prompt rather than a dialog: one user, no modal infrastructure,
     // and every other choice in this app is already made this way.
+    const others = folders.filter((f) => f.folderId !== current?.folderId);
     const answer = window.prompt(
-      `Move ${selected.size} frame(s) to which roll?\n\n` +
+      `Add ${selected.size} frame(s) to which roll?\n\n` +
         others.map((f, i) => `${i + 1}. ${f.name}`).join('\n'),
     );
     const target = others[Number(answer) - 1];
@@ -303,33 +337,74 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
     setError(undefined);
     setBatching(true);
-
     try {
-      const ids = [...selected];
-      const { moved, failed } = await api.movePhotos(
-        current.folderId,
-        ids,
-        target.folderId,
-      );
-      if (failed.length > 0) {
-        // Named, not counted: a move is per-photo, so the ones left behind are
-        // the only thing worth retrying and the user has to know which they are.
-        const names = failed.map(
-          (f) => photos?.find((p) => p.photoId === f.photoId)?.basename ?? f.photoId,
-        );
-        setError(
-          `Moved ${moved.length} of ${ids.length} to ${target.name}. Left behind: ${names.join(', ')}`,
-        );
-      }
+      const result = await api.attachPhotos(target.folderId, [...selected]);
+      setStatus(membershipNote(result, 'Added', target.name));
       clear();
-      setOpenIndex(undefined);
-      await refresh();
-      // Both rolls' photoCounts just changed, and `current` is read off this list.
       setFolders((await api.listFolders()).folders);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBatching(false);
+    }
+  };
+
+  /** Takes the selection out of this roll. The photographs are untouched. */
+  const removeFromRoll = async () => {
+    if (!current || isLibrary) return;
+
+    setError(undefined);
+    setBatching(true);
+    try {
+      const result = await api.detachPhotos(current.folderId, [...selected]);
+      setStatus(membershipNote(result, 'Removed', current.name));
+      clear();
+      setOpenIndex(undefined);
+      await refresh();
+      // The count changed, and removing the cover frame cleared it.
+      setFolders((await api.listFolders()).folders);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBatching(false);
+    }
+  };
+
+  /**
+   * Destroys the photographs themselves. Spelled out in the confirm because this
+   * is the only irreversible action in the app, and it sits next to "Remove from
+   * roll", which looks similar and undoes nothing.
+   */
+  const destroySelected = async () => {
+    const ids = [...selected];
+    if (
+      !window.confirm(
+        `Permanently delete ${ids.length} photograph(s)?\n\n` +
+          'This removes the originals and RAWs from every roll they are in. ' +
+          'To take them out of just this roll, use Remove from roll.',
+      )
+    ) {
+      return;
+    }
+
+    setError(undefined);
+    setBatching(true);
+    let done = 0;
+    try {
+      for (const photoId of ids) {
+        await api.destroyPhoto(photoId);
+        done += 1;
+        setStatus(`Deleted ${done} of ${ids.length}…`);
+      }
+    } catch (err) {
+      setError(`${(err as Error).message} — ${ids.length - done} not deleted`);
+    } finally {
+      setStatus(undefined);
+      clear();
+      setOpenIndex(undefined);
+      setBatching(false);
+      await refresh();
+      setFolders((await api.listFolders()).folders);
     }
   };
 
@@ -344,21 +419,18 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   };
 
   /**
-   * Deleting a roll must never delete a photograph. An empty roll goes straight
-   * away; one that still holds frames sends them to the orphan roll first, so
-   * the destructive-looking button is only ever destructive to the folder.
+   * Drops the roll. Nothing is chunked, nothing is moved out first, and no frame
+   * is at risk: a roll holds pointers, so the photographs stay in the library and
+   * in any other roll they are in. This used to orphan every frame in batches of
+   * ten before it could even try, and could still refuse.
    */
   const deleteRoll = async () => {
-    if (!current || !photos) return;
-    const ids = photos.map((p) => p.photoId);
+    if (!current || isLibrary || !photos) return;
 
     if (
       !window.confirm(
-        ids.length === 0
-          ? `Delete ${current.name}? The roll is empty.`
-          : `${current.name} still holds ${ids.length} frame(s).\n\n` +
-              'They move to the orphaned roll — nothing is deleted — and then ' +
-              'this roll goes. Continue?',
+        `Delete the roll "${current.name}" and its share links?\n\n` +
+          `The ${photos.length} frame(s) in it stay in All photos.`,
       )
     ) {
       return;
@@ -366,82 +438,20 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
     setError(undefined);
     setBatching(true);
-
     try {
-      // The server caps a move at MOVE_BATCH because each photo is a transaction
-      // plus S3 copies against a 15s timeout. A roll is 200 frames, so chunk to
-      // that cap rather than moving what fits and leaving the rest unannounced.
-      for (let i = 0; i < ids.length; i += MOVE_BATCH) {
-        const chunk = ids.slice(i, i + MOVE_BATCH);
-        setStatus(`Orphaning ${i + chunk.length} of ${ids.length} frames…`);
-        const { failed } = await api.movePhotos(
-          current.folderId,
-          chunk,
-          ORPHAN_FOLDER_ID,
-        );
-        // Stop here rather than pressing on to the delete: the roll must not be
-        // removed while it still holds a frame that refused to move.
-        if (failed.length > 0) {
-          throw new Error(
-            `${failed.length} frame(s) stayed put (${failed[0].message}) — roll kept`,
-          );
-        }
-      }
-
-      setStatus(undefined);
       await api.deleteFolder(current.folderId);
-      // Both the orphan roll's count and its very existence may have changed.
       setFolders((await api.listFolders()).folders);
       location.hash = '';
     } catch (err) {
-      // Surfaces the API's own 409 text, including the count it names when a
-      // bulk upload landed between this render and the click.
       setError((err as Error).message);
       await refresh();
     } finally {
-      setStatus(undefined);
       setBatching(false);
-    }
-  };
-
-  /**
-   * One request per frame rather than a batch route: each is a couple of small
-   * S3 copies, and separate requests mean no Lambda timeout to size a cap
-   * against. Serial so a long selection does not open forty at once.
-   */
-  const setHidden = async (ids: string[], hidden: boolean) => {
-    if (!current) return;
-    setError(undefined);
-    setBatching(true);
-
-    // Named, not counted, and for a sharper reason than the move above: the
-    // selection is cleared below either way, so a bare count would leave the
-    // owner believing frames are out of circulation that are still being served.
-    let index = 0;
-    try {
-      for (const photoId of ids) {
-        await api.setPhotoHidden(current.folderId, photoId, hidden);
-        index += 1;
-      }
-    } catch (err) {
-      const names = ids
-        .slice(index)
-        .map((id) => photos?.find((p) => p.photoId === id)?.basename ?? id);
-      setError(
-        `${(err as Error).message} — still ${hidden ? 'visible' : 'hidden'}: ${names.join(', ')}`,
-      );
-    } finally {
-      clear();
-      setOpenIndex(undefined);
-      setBatching(false);
-      await refresh();
-      // Hiding the cover frame clears it, so the roll list is now stale.
-      setFolders((await api.listFolders()).folders);
     }
   };
 
   const setCover = async (photo: PhotoView) => {
-    if (!current) return;
+    if (!current || isLibrary) return;
     const folder = await api.updateFolder(current.folderId, {
       coverPhotoId: photo.photoId,
     });
@@ -450,11 +460,18 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   };
 
   const removePhoto = async (photo: PhotoView) => {
-    if (!current) return;
-    if (!window.confirm(`Delete ${photo.basename}? This removes the RAW too.`)) return;
-    await api.deletePhoto(current.folderId, photo.photoId);
+    if (
+      !window.confirm(
+        `Permanently delete ${photo.basename}?\n\n` +
+          'This removes the original and RAW from every roll it is in.',
+      )
+    ) {
+      return;
+    }
+    await api.destroyPhoto(photo.photoId);
     setOpenIndex(undefined);
     await refresh();
+    setFolders((await api.listFolders()).folders);
   };
 
   // ------------------------------------------------------------------ folders
@@ -508,6 +525,19 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           </div>
         ) : (
           <div className="rolls">
+            {/* First, and always present even with no rolls at all: it is the
+                library itself, and the only place a photograph in no roll can
+                be reached from. */}
+            <button
+              className="roll"
+              onClick={() => (location.hash = LIBRARY_ID)}
+            >
+              <div className="roll-text">
+                <div className="roll-name">All photos</div>
+                <div className="roll-meta">every frame, in no roll in particular</div>
+              </div>
+            </button>
+
             {folders?.map((folder) => (
               <button
                 key={folder.folderId}
@@ -515,12 +545,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
                 onClick={() => (location.hash = folder.folderId)}
               >
                 {folder.coverPhotoId && (
-                  // alt="" so a deleted or moved cover collapses to the plain
-                  // tile rather than a broken-image icon. No JS fallback needed.
-                  <img
-                    src={`/f/${folder.folderId}/${folder.coverPhotoId}/thumb.webp`}
-                    alt=""
-                  />
+                  // alt="" so a deleted cover collapses to the plain tile rather
+                  // than a broken-image icon. No JS fallback needed.
+                  <img src={`/f/${folder.coverPhotoId}/thumb.webp`} alt="" />
                 )}
                 <div className="roll-text">
                   <div className="roll-name">{folder.name}</div>
@@ -538,28 +565,15 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   // ------------------------------------------------------------- folder detail
 
-  const hiddenCount = photos?.filter((p) => p.hidden).length ?? 0;
-  // The sheet numbers whatever it is handed, one-based, so filtering here is also
-  // what keeps the numbering gapless — a jump from 06 to 08 would advertise the
-  // frame that was taken out, which is the opposite of the point.
-  const shown = showHidden ? photos : photos?.filter((p) => !p.hidden);
-  const selectedHidden = (photos ?? []).filter(
-    (p) => selected.has(p.photoId) && p.hidden,
-  ).length;
+  const shown = photos;
 
   return (
     <>
-      {/* `shown`, not `photos`: the header describes the sheet under it, and
-          counting frames the sheet is deliberately numbering around would
-          advertise the ones taken out of circulation.
-
-          The orphan roll is an ordinary folder in every way but two: it is a
-          fixture, so it cannot be renamed or deleted, and the server refuses
-          both regardless of what this offers. */}
+      {/* The library is not a folder: nothing to rename. */}
       <EdgeHeader
         name={current.name}
         photos={shown ?? []}
-        onRename={current.folderId === ORPHAN_FOLDER_ID ? undefined : renameRoll}
+        onRename={isLibrary ? undefined : renameRoll}
       />
 
       <div className="toolbar">
@@ -567,17 +581,27 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           ← All rolls
         </button>
 
-        <button className="btn" disabled={batching} onClick={() => fileInput.current?.click()}>
-          Add photos
-        </button>
-        <input
-          ref={fileInput}
-          type="file"
-          multiple
-          accept=".jpg,.jpeg,.png,.heic,.heif,.hif,.raf,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2"
-          hidden
-          onChange={(e) => handleFiles(e.target.files)}
-        />
+        {/* Uploads need a roll to land in. From the library there is no answer to
+            "which one", so the button is simply not offered. */}
+        {!isLibrary && (
+          <>
+            <button
+              className="btn"
+              disabled={batching}
+              onClick={() => fileInput.current?.click()}
+            >
+              Add photos
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              accept=".jpg,.jpeg,.png,.heic,.heif,.hif,.raf,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2"
+              hidden
+              onChange={(e) => handleFiles(e.target.files)}
+            />
+          </>
+        )}
 
         {selected.size > 0 && (
           <>
@@ -600,19 +624,22 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
                 Download RAWs
               </button>
             )}
-            {(folders?.length ?? 0) > 1 && (
-              <button className="btn" disabled={batching} onClick={moveSelected}>
-                Move to…
+            {/* Adds, never moves — a frame can be in several rolls. Needs at
+                least one roll that is not the one being looked at. */}
+            {(folders ?? []).some((f) => f.folderId !== current.folderId) && (
+              <button className="btn" disabled={batching} onClick={addToRoll}>
+                Add to roll…
               </button>
             )}
-            {/* Unhide only when every selected frame is already hidden, so a
-                mixed selection cannot silently republish one of them. */}
-            <button
-              className="btn"
-              disabled={batching}
-              onClick={() => setHidden([...selected], selectedHidden !== selected.size)}
-            >
-              {selectedHidden === selected.size ? 'Unhide' : 'Hide'}
+            {!isLibrary && (
+              <button className="btn" disabled={batching} onClick={removeFromRoll}>
+                Remove from roll
+              </button>
+            )}
+            {/* Safelight red, and last: this is the one action here that destroys
+                a photograph rather than a pointer at one. */}
+            <button className="btn btn-danger" disabled={batching} onClick={destroySelected}>
+              Delete photos
             </button>
             <button className="btn" onClick={clear}>
               Clear
@@ -622,21 +649,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
         <div className="spacer" />
 
-        {hiddenCount > 0 && (
-          <button
-            className="btn"
-            onClick={() => {
-              // Turning the toggle off shrinks the sheet, so any hidden frame in
-              // the selection would keep it in selection mode with nothing
-              // visibly marked — the same drift `retain` exists to prevent.
-              if (showHidden) retain((photos ?? []).filter((p) => !p.hidden).map((p) => p.photoId));
-              setShowHidden((on) => !on);
-            }}
-          >
-            {showHidden ? `Hide hidden (${hiddenCount})` : `Show hidden (${hiddenCount})`}
-          </button>
-        )}
-
+        {!isLibrary && (
         <button
           className="btn"
           disabled={batching}
@@ -652,10 +665,14 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         >
           {shareForm ? 'Cancel' : 'Share roll'}
         </button>
+        )}
 
-        {photos && current.folderId !== ORPHAN_FOLDER_ID && (
+        {/* Safelight red because it destroys the roll, but it can no longer
+            destroy a photograph — so no chunked orphaning behind it and no
+            second label for the non-empty case. */}
+        {!isLibrary && photos && (
           <button className="btn btn-danger" disabled={batching} onClick={deleteRoll}>
-            {photos.length === 0 ? 'Delete roll' : 'Orphan frames & delete roll'}
+            Delete roll
           </button>
         )}
       </div>
@@ -798,13 +815,12 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         </div>
       ) : shown.length === 0 ? (
         <div className="empty">
-          {/* A roll of nothing but hidden frames is not an empty roll, and telling
-              the owner to add photos to one they can see with a click is a lie. */}
-          <h2>{hiddenCount > 0 ? 'Nothing on the sheet' : 'Empty roll'}</h2>
+          <h2>{isLibrary ? 'No photos yet' : 'Empty roll'}</h2>
           <p className="note">
-            {hiddenCount > 0
-              ? `Every frame on this roll is hidden (${hiddenCount}).`
-              : 'Add JPEGs and RAFs together — matching filenames become one frame.'}
+            {isLibrary
+              ? 'Open a roll and add JPEGs and RAFs to it.'
+              : 'Add JPEGs and RAFs together — matching filenames become one frame. ' +
+                'Or add frames already in the library from All photos.'}
           </p>
         </div>
       ) : (
@@ -824,8 +840,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           onNavigate={setOpenIndex}
           onDownload={download}
           onDelete={removePhoto}
-          onSetCover={setCover}
-          onSetHidden={(photo, hidden) => setHidden([photo.photoId], hidden)}
+          // The library has no roll to be the cover of.
+          onSetCover={isLibrary ? undefined : setCover}
         />
       )}
     </>

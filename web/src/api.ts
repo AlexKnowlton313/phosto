@@ -12,8 +12,6 @@ export interface PhotoView {
   width?: number;
   height?: number;
   ready: boolean;
-  /** Admin only in practice: a share never lists a hidden frame at all. */
-  hidden?: boolean;
   hasRaw: boolean;
   canDownload: boolean;
   camera?: string;
@@ -22,6 +20,11 @@ export interface PhotoView {
   aperture?: string;
   shutter?: string;
   focalLength?: string;
+  /**
+   * Relative for the admin, whose signed cookie covers `f/*`; absolute and signed
+   * for a share viewer, who holds no cookie and is granted each object on its own.
+   * Nothing here needs to know which — both go straight into `<img src>`.
+   */
   urls: { thumb: string; large: string };
 }
 
@@ -30,18 +33,17 @@ export interface FolderView {
   name: string;
   createdAt: string;
   photoCount: number;
-  /** Derivative key is `f/<folderId>/<coverPhotoId>/thumb.webp` — no API field needed. */
+  /** Derivative key is `f/<coverPhotoId>/thumb.webp` — no API field needed. */
   coverPhotoId?: string;
 }
 
 /**
- * Mirrors `ORPHAN_FOLDER_ID` in `functions/shared/types.ts` — the two trees do
- * not share a tsconfig, so the constant is restated the same way `FolderView`
- * restates `Folder`. A fixed literal, never a UUID, so it cannot collide. The
- * server creates the roll on first use and refuses to rename or delete it; the
- * client's only job is not to offer either.
+ * The "All photos" pseudo-roll. Not a folder on the server and never sent to one:
+ * the sidebar renders it alongside the real rolls, and every handler that would
+ * take a folderId checks for it first. A literal that `randomUUID()` cannot mint,
+ * so it can never collide with a real roll's id.
  */
-export const ORPHAN_FOLDER_ID = 'orphaned';
+export const LIBRARY_ID = 'all';
 
 /**
  * A live link as the list route returns it: `tokenHash` stripped and replaced by
@@ -134,12 +136,18 @@ export const adminApi = (token: string) => ({
       token,
     ),
 
-  /** 409s on a folder that still holds photos, and always on the orphan roll. */
+  /**
+   * Drops the roll and its share links. Never refuses, and never loses a frame —
+   * a folder holds pointers, so the photos stay in the library.
+   */
   deleteFolder: (folderId: string) =>
     request<void>(`/api/folders/${folderId}`, { method: 'DELETE' }, token),
 
   listPhotos: (folderId: string) =>
     request<{ photos: PhotoView[] }>(`/api/folders/${folderId}/photos`, {}, token),
+
+  /** Every photo, in no roll in particular. Backs the All photos view. */
+  listLibrary: () => request<{ photos: PhotoView[] }>('/api/photos', {}, token),
 
   requestUploads: (folderId: string, files: File[]) =>
     request<{ uploads: Array<{ filename: string; url: string; photoId: string }> }>(
@@ -157,39 +165,35 @@ export const adminApi = (token: string) => ({
       token,
     ),
 
-  deletePhoto: (folderId: string, photoId: string) =>
-    request<void>(
-      `/api/folders/${folderId}/photos/${photoId}`,
-      { method: 'DELETE' },
-      token,
-    ),
+  /**
+   * Destroys the photograph, in every roll at once. The only call here that can
+   * lose an image — taking a frame out of one roll is `detachPhotos`.
+   */
+  destroyPhoto: (photoId: string) =>
+    request<void>(`/api/photos/${photoId}`, { method: 'DELETE' }, token),
 
   /**
-   * Also physical: the derivatives move to `f/hidden/…`, which no share cookie
-   * reaches, so a link already open in someone's browser loses the frame too.
+   * Membership, both directions. No batch cap and no S3 work behind either — the
+   * photo never moves, only the pointers at it. `already` reports the no-ops so
+   * the UI can say "3 were already in this roll" instead of claiming it added them.
    */
-  setPhotoHidden: (folderId: string, photoId: string, hidden: boolean) =>
-    request<PhotoView>(
-      `/api/folders/${folderId}/photos/${photoId}`,
-      { method: 'PATCH', body: JSON.stringify({ hidden }) },
+  attachPhotos: (folderId: string, photoIds: string[]) =>
+    request<MembershipResult>(
+      `/api/folders/${folderId}/photos`,
+      { method: 'PUT', body: JSON.stringify({ photoIds }) },
       token,
     ),
 
-  /**
-   * Physical move — the objects follow the record, because the key prefix is
-   * what a share cookie is scoped to. Photos come back as DEVELOPING until the
-   * copy of the original has retriggered derivation under the new folder.
-   */
-  movePhotos: (folderId: string, photoIds: string[], toFolderId: string) =>
-    request<{ moved: string[]; failed: Array<{ photoId: string; message: string }> }>(
-      `/api/folders/${folderId}/photos/move`,
-      { method: 'POST', body: JSON.stringify({ photoIds, toFolderId }) },
+  detachPhotos: (folderId: string, photoIds: string[]) =>
+    request<MembershipResult>(
+      `/api/folders/${folderId}/photos`,
+      { method: 'DELETE', body: JSON.stringify({ photoIds }) },
       token,
     ),
 
-  download: (folderId: string, photoId: string, kind: 'original' | 'raw') =>
+  download: (photoId: string, kind: 'original' | 'raw') =>
     request<DownloadTarget>(
-      `/api/folders/${folderId}/photos/${photoId}/${kind}`,
+      `/api/photos/${photoId}/${kind}`,
       { method: 'POST' },
       token,
     ),
@@ -225,6 +229,13 @@ export const shareApi = {
       method: 'POST',
     }),
 };
+
+export interface MembershipResult {
+  changed: string[];
+  /** Already in the roll (or already out of it) — a no-op, not a failure. */
+  already: string[];
+  failed: Array<{ photoId: string; message: string }>;
+}
 
 export interface DownloadTarget {
   url: string;
