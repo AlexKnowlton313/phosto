@@ -29,7 +29,10 @@ const relative = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
  * greying: computing them separately let a link with 20 minutes left round down
  * to "expired" while still rendering live and still working.
  */
-function expiry(expiresAt: number) {
+function expiry(expiresAt?: number) {
+  // No expiry attribute at all: the link runs until it is revoked.
+  if (expiresAt === undefined) return { expired: false, label: 'never' };
+
   const ms = expiresAt * 1000 - Date.now();
   if (ms <= 0) return { expired: true, label: 'expired' };
 
@@ -256,8 +259,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     if (
       !window.confirm(
         `Revoke ${link.label ? `“${link.label}”` : 'this link'}? It stops working ` +
-          'immediately, but a viewer with the roll already open keeps their signed ' +
-          'cookie until it expires.',
+          'immediately, but a viewer with the roll already open keeps the signed ' +
+          'image URLs it handed them until those expire, up to 12 hours.',
       )
     ) {
       return;
@@ -635,7 +638,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       {/* Three fields is one dialog too many for the window.prompt convention the
           rest of this view uses, so the create flow is inline instead. */}
       {shareForm && (
-        <div style={{ padding: '16px 24px' }} className="stack">
+        <div className="panel stack">
           <div className="share-form">
             <div className="field">
               <label htmlFor="share-label">Label</label>
@@ -647,18 +650,24 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
                 onChange={(e) => setShareForm({ ...shareForm, label: e.target.value })}
               />
             </div>
+            {/* A select, not a number field: it fixes the value to something the
+                server accepts, so nothing here needs validating, and it is the
+                only place "never" (0 — no TTL, no expiry check) can be picked. */}
             <div className="field">
-              <label htmlFor="share-days">Expires in (days)</label>
-              <input
+              <label htmlFor="share-days">Expires</label>
+              <select
                 id="share-days"
-                type="number"
-                min={1}
-                max={365}
                 value={shareForm.days}
                 onChange={(e) =>
                   setShareForm({ ...shareForm, days: Number(e.target.value) })
                 }
-              />
+              >
+                <option value={7}>in 7 days</option>
+                <option value={30}>in 30 days</option>
+                <option value={90}>in 90 days</option>
+                <option value={365}>in a year</option>
+                <option value={0}>never</option>
+              </select>
             </div>
             <label className="check">
               <input
@@ -670,15 +679,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
               />
               Allow downloads
             </label>
-            {/* There is no <form>, so min/max above only drive the spinner —
-                nothing validates on click. Guarding here instead of leaning on
-                the server's clamp, which turns a cleared field into a 1-day
-                link and a non-numeric one into 30, both without a word. */}
-            <button
-              className="btn"
-              disabled={!Number.isInteger(shareForm.days) || shareForm.days < 1}
-              onClick={share}
-            >
+            <button className="btn" onClick={share}>
               Create link
             </button>
           </div>
@@ -686,10 +687,12 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       )}
 
       {created && (
-        <div style={{ padding: '16px 24px' }} className="stack">
+        <div className="panel stack">
           <label htmlFor="share-url">
-            Share link, expires in {created.expiresInDays}
-            {created.expiresInDays === 1 ? ' day' : ' days'}
+            {created.expiresInDays === 0
+              ? 'Share link, never expires'
+              : `Share link, expires in ${created.expiresInDays} ` +
+                (created.expiresInDays === 1 ? 'day' : 'days')}
           </label>
           <div className="share-link" id="share-url">
             {created.url}
@@ -707,8 +710,14 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         </div>
       )}
 
+      {/* Collapsed by default: the list is reference material, and a roll with a
+          handful of links pushed the contact sheet off the first screen. */}
       {shares && shares.length > 0 && (
-        <div style={{ padding: '16px 24px' }} className="stack">
+        <details className="panel shares-panel">
+          <summary>
+            {shares.length} share {shares.length === 1 ? 'link' : 'links'}
+          </summary>
+          <div className="stack">
           <div className="shares-scroll">
             <table className="shares">
             <thead>
@@ -747,7 +756,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
             A share URL is shown once, when it is created. Only its SHA-256 is
             stored, so no link can be listed here. Revoke one and make another.
           </p>
-        </div>
+          </div>
+        </details>
       )}
 
       {status && <p className="note" style={{ padding: '16px 24px' }}>{status}</p>}

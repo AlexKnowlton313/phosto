@@ -54,8 +54,11 @@ export interface ShareSummary {
   id: string;
   folderId: string;
   createdAt: string;
-  /** Unix seconds; also the DynamoDB TTL attribute. Not ISO, unlike createdAt. */
-  expiresAt: number;
+  /**
+   * Unix seconds; also the DynamoDB TTL attribute. Not ISO, unlike createdAt.
+   * Absent on a link that never expires.
+   */
+  expiresAt?: number;
   allowDownload: boolean;
   label?: string;
 }
@@ -202,6 +205,7 @@ export const adminApi = (token: string) => ({
   /** The URL comes back exactly once — only the token's hash is persisted. */
   createShare: (
     folderId: string,
+    /** `expiresInDays: 0` is a link with no expiry — only revoking ends it. */
     options: { expiresInDays: number; allowDownload: boolean; label?: string },
   ) =>
     request<{ url: string; expiresInDays: number }>(

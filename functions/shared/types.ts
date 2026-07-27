@@ -61,8 +61,12 @@ export interface Share {
   tokenHash: string;
   folderId: string;
   createdAt: string;
-  /** Unix seconds; also the DynamoDB TTL attribute. */
-  expiresAt: number;
+  /**
+   * Unix seconds; also the DynamoDB TTL attribute. Absent means the link never
+   * expires — TTL only deletes items that carry the attribute, so leaving it off
+   * is the whole implementation. Only `deleteShare` ends one of these.
+   */
+  expiresAt?: number;
   allowDownload: boolean;
   label?: string;
 }

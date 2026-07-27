@@ -287,6 +287,12 @@ list greys expired links rather than hiding them: they are really still there. T
 list route strips `tokenHash` down to a 12-hex `id` and no route can return a share
 URL a second time, so the UI has to say that rather than look like it lost one.
 
+A share with **no `expiresAt` at all never expires** — TTL only deletes items
+carrying the attribute, so absence is both "no TTL" and, in `getShare`, no expiry
+check. `expiresInDays: 0` creates one. Revoking is then the only thing that ends
+it, so treat `Share.expiresAt` as optional everywhere and never `<=`-compare it
+without a presence check.
+
 ## Derivatives
 
 | Input | Preview source |

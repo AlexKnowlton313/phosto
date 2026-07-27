@@ -507,7 +507,9 @@ export async function getShare(tokenHash: string): Promise<Share | null> {
 
   // DynamoDB TTL deletion can lag by up to 48 hours, so never trust it for access
   // control — check the expiry here too.
-  if (share.expiresAt <= Math.floor(Date.now() / 1000)) return null;
+  // No `expiresAt` at all is a never-expiring link, not a malformed one.
+  if (share.expiresAt !== undefined && share.expiresAt <= Math.floor(Date.now() / 1000))
+    return null;
   return share;
 }
 

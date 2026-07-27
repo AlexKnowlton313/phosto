@@ -462,7 +462,8 @@ label {
 input[type='text'],
 input[type='email'],
 input[type='password'],
-input[type='number'] {
+input[type='number'],
+select {
   font: inherit;
   color: var(--ink);
   background: var(--bg);
@@ -472,7 +473,8 @@ input[type='number'] {
   width: 100%;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--faint);
   outline: none;
 }
@@ -636,17 +638,54 @@ input:focus {
   transition: width 200ms ease;
 }
 
+/* Everything between the sticky toolbar and the sheet: the create form, the
+   fresh link, the share list. Its own surface and rule, or it reads as a
+   ragged extension of the toolbar sitting above it. */
+.panel {
+  padding: 18px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
 /* One row on a desktop, wrapping to a column on a phone — the fields are short
    and a stacked form for three of them reads like a much bigger commitment. */
 .share-form {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 12px;
+  gap: 14px;
 }
 
 .share-form .field {
   flex: 1 1 180px;
+}
+
+/* The checkbox is a bare 16px line beside 38px-tall inputs; flex-end alone
+   pins it to the very bottom edge. Pad it to sit with the field text. */
+.share-form .check {
+  padding-bottom: 10px;
+}
+
+/* Native <details>, no JS. The marker is the whole affordance, so the summary
+   is set like a section head rather than a control. */
+.shares-panel summary {
+  cursor: pointer;
+  /* Toggling twice quickly is a double-click, which selects the label. */
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.shares-panel summary:hover {
+  color: var(--ink);
+}
+
+.shares-panel[open] summary {
+  margin-bottom: 14px;
 }
 
 /* Five nowrap columns and an unbounded label do not fit a phone. Scroll the

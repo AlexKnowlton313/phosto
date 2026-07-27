@@ -415,7 +415,10 @@ async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
     label?: string;
   }>(event);
 
-  const days = Math.min(Math.max(body.expiresInDays ?? 30, 1), 365);
+  // 0 means never: the item goes in with no `expiresAt`, which is both "no TTL"
+  // and "no expiry check". Revoking is then the only way it ever stops working.
+  const days =
+    body.expiresInDays === 0 ? 0 : Math.min(Math.max(body.expiresInDays ?? 30, 1), 365);
 
   // 32 bytes of entropy, base64url. This value is returned exactly once and only
   // its hash is persisted, so a leaked table does not yield working links.
@@ -426,7 +429,7 @@ async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
     tokenHash: hashToken(token),
     folderId,
     createdAt: now.toISOString(),
-    expiresAt: Math.floor(now.getTime() / 1000) + days * 86400,
+    expiresAt: days ? Math.floor(now.getTime() / 1000) + days * 86400 : undefined,
     allowDownload: body.allowDownload ?? false,
     label: body.label,
   });
