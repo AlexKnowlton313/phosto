@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { PhotoView } from '../api';
+import { modalOpen } from './Dialog';
 
 interface Props {
   photos: PhotoView[];
@@ -41,7 +42,9 @@ export function useSelection() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') clear();
+      // Escape belongs to an open dialog — cancelling one must not also drop the
+      // selection it was asking about.
+      if (event.key === 'Escape' && !modalOpen()) clear();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

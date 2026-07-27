@@ -72,20 +72,6 @@ export function Share({ token }: { token: string }) {
     <>
       <EdgeHeader name={data.folder.name} photos={data.photos} />
 
-      {selected.size > 0 && (
-        <div className="toolbar">
-          <span className="note">{selected.size} selected</span>
-          {data.permissions.allowDownload && downloadable.length > 0 && (
-            <button className="btn" disabled={batching} onClick={downloadSelected}>
-              Download JPEGs
-            </button>
-          )}
-          <button className="btn" onClick={clear}>
-            Clear
-          </button>
-        </div>
-      )}
-
       {error && <p className="error" style={{ padding: '16px 24px' }}>{error}</p>}
 
       {data.photos.length === 0 ? (
@@ -100,6 +86,23 @@ export function Share({ token }: { token: string }) {
           onOpen={setOpenIndex}
           onToggle={toggle}
         />
+      )}
+
+      {/* Same bar as the admin sheet: it acts on the selection, so it sits at
+          the foot of the frames rather than at the top of the page. */}
+      {selected.size > 0 && (
+        <div className="toolbar toolbar-footer">
+          <span className="note">{selected.size} selected</span>
+          {data.permissions.allowDownload && downloadable.length > 0 && (
+            <button className="btn" disabled={batching} onClick={downloadSelected}>
+              Download JPEGs
+            </button>
+          )}
+          <div className="spacer" />
+          <button className="btn" onClick={clear}>
+            Clear
+          </button>
+        </div>
       )}
 
       {openIndex !== undefined && (

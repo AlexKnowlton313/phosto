@@ -344,6 +344,15 @@ out of this roll"; from All photos there is no roll it could have meant instead.
 Side by side the two look alike, and one misclick is the difference between a
 pointer and a negative. Safelight red, and it confirms.
 
+Every question the admin asks goes through `useDialog()`
+(`components/Dialog.tsx`) — a native `<dialog>` + `showModal()`, so the focus
+trap, Esc and the top layer come from the platform and it needs no z-index to
+sit over the lightbox. No `window.confirm`/`prompt` anywhere: they cannot be
+styled, and — the part that bit — a `showModal()` dialog does *not* stop keydown
+reaching window listeners the way `confirm()` froze the page, so both Escape
+handlers (`Lightbox`, `useSelection`) check `modalOpen()` or one Escape cancels
+the dialog *and* clears the selection under it.
+
 Selection actions live in `.toolbar-footer`, a sticky bar at the foot of the
 sheet, not in the roll toolbar — they act on the selection, not the roll. It is
 sticky rather than fixed so it reserves its own space and cannot cover the last

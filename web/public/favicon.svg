@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="12" fill="#17181b"/>
+  <!-- Box camera in three-quarter view: A and P on the two visible side faces,
+       lens on the top. Palette is the sheet's greys — amber is negatives only. -->
+  <g stroke="#676c75" stroke-width="1.5" stroke-linejoin="round">
+    <path d="M12 25 32 14 52 25 32 36Z" fill="#33363d"/>
+    <path d="M12 25 32 36v16L12 41Z" fill="#2a2d33"/>
+    <path d="M52 25 32 36v16l20-11Z" fill="#202226"/>
+  </g>
+  <ellipse cx="32" cy="25" rx="8.5" ry="4.7" fill="#17181b" stroke="#9298a2" stroke-width="1.5"/>
+  <g fill="#edeae4" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15"
+     font-weight="600" text-anchor="middle" dominant-baseline="central">
+    <text transform="translate(22 39) skewY(28.8)">A</text>
+    <text transform="translate(42 39) skewY(-28.8)">P</text>
+  </g>
+</svg>

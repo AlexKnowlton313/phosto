@@ -18,6 +18,7 @@ import {
   SkeletonSheet,
   useSelection,
 } from '../components/ContactSheet';
+import { useDialog } from '../components/Dialog';
 import { Lightbox } from '../components/Lightbox';
 
 /** Enough to saturate a connection without starving the UI thread. */
@@ -93,6 +94,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   // between downloads exists to avoid.
   const [batching, setBatching] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  // Replaces window.confirm/prompt: same call shape, a dialog that belongs to
+  // this app. `dialog` renders in both branches below — the roll index asks too.
+  const { confirm, prompt, choose, dialog } = useDialog();
 
   // "All photos" is a pseudo-roll: it has no folder record, so it can't be
   // renamed, shared or deleted, and there is nothing to detach from. Everything
@@ -172,9 +176,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   }, [folderId, photos, refresh]);
 
   const newFolder = async () => {
-    const name = window.prompt('Name this roll');
-    if (!name?.trim()) return;
-    const folder = await api.createFolder(name.trim());
+    const name = await prompt({ title: 'Name this roll', confirmLabel: 'Create' });
+    if (!name) return;
+    const folder = await api.createFolder(name);
     setFolders((prev) => [folder, ...(prev ?? [])]);
     location.hash = folder.folderId;
   };
@@ -257,15 +261,16 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   const revokeShare = async (link: ShareSummary) => {
     if (!current) return;
-    if (
-      !window.confirm(
-        `Revoke ${link.label ? `“${link.label}”` : 'this link'}? It stops working ` +
-          'immediately, but a viewer with the roll already open keeps the signed ' +
-          'image URLs it handed them until those expire, up to 12 hours.',
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm({
+      title: `Revoke ${link.label ? `“${link.label}”` : 'this link'}?`,
+      body:
+        'It stops working immediately, but a viewer with the roll already open ' +
+        'keeps the signed image URLs it handed them until those expire, up to ' +
+        '12 hours.',
+      confirmLabel: 'Revoke',
+      danger: true,
+    });
+    if (!ok) return;
     setError(undefined);
     try {
       await api.revokeShare(current.folderId, link.id);
@@ -333,14 +338,31 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
    */
   const addToRoll = async () => {
     if (!folders?.length) return;
-    // A numbered prompt rather than a dialog: one user, no modal infrastructure,
-    // and every other choice in this app is already made this way.
     const others = folders.filter((f) => f.folderId !== current?.folderId);
-    const answer = window.prompt(
-      `Add ${selected.size} frame(s) to which roll?\n\n` +
-        others.map((f, i) => `${i + 1}. ${f.name}`).join('\n'),
-    );
-    const target = others[Number(answer) - 1];
+
+    // Which rolls already hold some of this selection. Re-adding is a harmless
+    // no-op, so a failure here costs a hint and nothing else — show the picker
+    // without the notes rather than refuse to open it.
+    const counts = await api
+      .photoMemberships([...selected])
+      .then((r) => r.counts)
+      .catch(() => ({}) as Record<string, number>);
+
+    const targetId = await choose({
+      title: `Add ${selected.size} frame(s) to…`,
+      body: 'The frames stay where they are — a frame can be in several rolls.',
+      options: others.map((f) => ({
+        id: f.folderId,
+        name: f.name,
+        note:
+          counts[f.folderId] === undefined
+            ? undefined
+            : counts[f.folderId] === selected.size
+              ? 'all already in'
+              : `${counts[f.folderId]} already in`,
+      })),
+    });
+    const target = others.find((f) => f.folderId === targetId);
     if (!target) return;
 
     setError(undefined);
@@ -384,15 +406,15 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
    */
   const destroySelected = async () => {
     const ids = [...selected];
-    if (
-      !window.confirm(
-        `Permanently delete ${ids.length} photograph(s)?\n\n` +
-          'This removes the originals and RAWs from every roll they are in. ' +
-          'To take them out of one roll, open that roll and use Remove from roll.',
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm({
+      title: `Permanently delete ${ids.length} photograph(s)?`,
+      body:
+        'This removes the originals and RAWs from every roll they are in. To ' +
+        'take them out of one roll, open that roll and use Remove from roll.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
 
     setError(undefined);
     setBatching(true);
@@ -417,11 +439,15 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
   const renameRoll = async () => {
     if (!current) return;
-    const name = window.prompt('Rename this roll', current.name);
-    // Whitespace-only cancels rather than clearing the name. The API refuses it
-    // too, so this only saves the round trip.
-    if (!name?.trim()) return;
-    const folder = await api.updateFolder(current.folderId, { name: name.trim() });
+    // Whitespace-only cancels rather than clearing the name — the dialog resolves
+    // a blank as null. The API refuses it too, so this only saves the round trip.
+    const name = await prompt({
+      title: 'Rename this roll',
+      value: current.name,
+      confirmLabel: 'Rename',
+    });
+    if (!name) return;
+    const folder = await api.updateFolder(current.folderId, { name });
     setFolders((prev) => prev?.map((f) => (f.folderId === folder.folderId ? folder : f)));
   };
 
@@ -432,14 +458,13 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const deleteRoll = async () => {
     if (!current || isLibrary || !photos) return;
 
-    if (
-      !window.confirm(
-        `Delete the roll "${current.name}" and its share links?\n\n` +
-          `The ${photos.length} frame(s) in it stay in All photos.`,
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm({
+      title: `Delete the roll “${current.name}” and its share links?`,
+      body: `The ${photos.length} frame(s) in it stay in All photos.`,
+      confirmLabel: 'Delete roll',
+      danger: true,
+    });
+    if (!ok) return;
 
     setError(undefined);
     setBatching(true);
@@ -465,14 +490,13 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   };
 
   const removePhoto = async (photo: PhotoView) => {
-    if (
-      !window.confirm(
-        `Permanently delete ${photo.basename}?\n\n` +
-          'This removes the original and RAW from every roll it is in.',
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm({
+      title: `Permanently delete ${photo.basename}?`,
+      body: 'This removes the original and RAW from every roll it is in.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     await api.destroyPhoto(photo.photoId);
     setOpenIndex(undefined);
     await refresh();
@@ -585,6 +609,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
             </button>
           ))}
         </div>
+
+        {dialog}
       </>
     );
   }
@@ -636,8 +662,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         )}
       </div>
 
-      {/* Three fields is one dialog too many for the window.prompt convention the
-          rest of this view uses, so the create flow is inline instead. */}
+      {/* Inline rather than in the dialog: this one has three fields and its
+          result — the URL, shown once — has to stay on screen afterwards. */}
       {shareForm && (
         <div className="panel stack">
           <div className="share-form">
@@ -858,6 +884,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           onSetCover={isLibrary ? undefined : setCover}
         />
       )}
+
+      {dialog}
     </>
   );
 }

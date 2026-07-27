@@ -769,6 +769,79 @@ select:focus {
   color: var(--amber);
 }
 
+/* --------------------------------------------------------------------- modal */
+
+/*
+ * A print easel on the bench: the same surface and rule as a panel, lifted off
+ * the sheet by a shadow rather than by a colour, because there is no colour
+ * spare. In the top layer via showModal(), so no z-index here — it sits over the
+ * lightbox by construction.
+ */
+.modal {
+  margin: auto;
+  width: min(420px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.modal::backdrop {
+  background: rgba(10, 11, 13, 0.72);
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px 24px;
+}
+
+/* Set like the roll names, one step down — it names the thing being acted on. */
+.modal-title {
+  margin: 0;
+  font-family: var(--condensed);
+  font-weight: 600;
+  font-size: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* Enough rolls to overflow is ordinary; scroll the list, not the dialog. */
+.modal-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 44vh;
+  overflow-y: auto;
+}
+
+/* Roll name left, "already there" right, on one line — the note is a reason to
+   look twice, not a second row of list. */
+.modal-choices .btn {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+
+.modal-note {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 @media (max-width: 620px) {
   .edge,
   .toolbar {

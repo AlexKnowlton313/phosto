@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PhotoView } from '../api';
+import { modalOpen } from './Dialog';
 
 interface Props {
   photos: PhotoView[];
@@ -154,6 +155,8 @@ export function Lightbox({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // A confirm dialog opened from here owns the keyboard until it is answered.
+      if (modalOpen()) return;
       if (event.key === 'Escape') onClose();
       if (event.key === 'ArrowRight') onNavigate(Math.min(index + 1, photos.length - 1));
       if (event.key === 'ArrowLeft') onNavigate(Math.max(index - 1, 0));

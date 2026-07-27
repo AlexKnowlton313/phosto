@@ -402,6 +402,36 @@ async function setMembership(
   return json(200, { changed, already, failed });
 }
 
+/**
+ * How many of these frames each roll already holds, so "Add to roll…" can say
+ * so before the click rather than reporting it afterwards. Re-adding is a
+ * harmless no-op — `attachPhoto`'s condition refuses the duplicate and the
+ * count is bumped in the same transaction, so nothing drifts — but a picker
+ * that cannot say "12 of 12 already there" makes the user find out by trying.
+ *
+ * Queried per photo, not per folder: a membership hangs off the *photo's*
+ * partition, so this is one small query each and it scales with the selection
+ * the user made rather than with every roll in the library. Rolls holding none
+ * of them are simply absent.
+ */
+async function photoMemberships(event: APIGatewayProxyEventV2) {
+  const { photoIds } = parseBody<{ photoIds?: string[] }>(event);
+  if (!Array.isArray(photoIds) || !photoIds.length) {
+    throw new HttpError(400, 'photoIds[] is required');
+  }
+
+  const counts: Record<string, number> = {};
+  // ponytail: serial, one query per frame. 200 frames is ~1s inside a 15s
+  // budget; chunk with Promise.all if the cap ever rises.
+  for (const photoId of new Set(photoIds)) {
+    for (const { folderId } of await db.listPhotoMemberships(photoId)) {
+      counts[folderId] = (counts[folderId] ?? 0) + 1;
+    }
+  }
+
+  return json(200, { counts });
+}
+
 async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
   const folder = await db.getFolder(folderId);
   if (!folder) throw new HttpError(404, 'Folder not found');
@@ -735,6 +765,13 @@ const routes: Array<{
     pattern: /^\/api\/photos$/,
     admin: true,
     handle: async () => json(200, { photos: await asAdmin(await db.listLibrary()) }),
+  },
+  {
+    // A read, but POSTed: the ids are the selection and there can be 200 of them.
+    method: 'POST',
+    pattern: /^\/api\/photos\/memberships$/,
+    admin: true,
+    handle: (event) => photoMemberships(event),
   },
   {
     // Uploads go to the library, never to a roll — hence no folder id here.

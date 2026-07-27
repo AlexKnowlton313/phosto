@@ -186,6 +186,18 @@ export const adminApi = (token: string) => ({
       token,
     ),
 
+  /**
+   * How many of these frames each roll already holds, keyed by folder id. Rolls
+   * holding none are absent. Feeds the "already there" note in the roll picker;
+   * re-adding is a no-op either way.
+   */
+  photoMemberships: (photoIds: string[]) =>
+    request<{ counts: Record<string, number> }>(
+      '/api/photos/memberships',
+      { method: 'POST', body: JSON.stringify({ photoIds }) },
+      token,
+    ),
+
   download: (photoId: string, kind: 'original' | 'raw') =>
     request<DownloadTarget>(
       `/api/photos/${photoId}/${kind}`,
