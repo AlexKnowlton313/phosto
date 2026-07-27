@@ -450,6 +450,12 @@ async function openShare(token: string) {
   const folder = await db.getFolder(share.folderId);
   if (!folder) throw new HttpError(404, 'This link has expired or does not exist');
 
+  // Counted here and nowhere else. `GET /s/<token>` and the og.webp beside it are
+  // what a chat client prefetches to unfurl a link, so counting those would show
+  // opens for a message nobody clicked. This route is the viewer fetching photos.
+  // Awaited, not fired and forgotten: Lambda freezes the container at response.
+  await db.recordShareView(share.tokenHash);
+
   // Still building. `photoCount` below reads off the filtered list, which is why
   // the share's count is right for free.
   const photos = (await db.listPhotos(share.folderId))

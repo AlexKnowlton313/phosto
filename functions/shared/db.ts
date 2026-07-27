@@ -526,6 +526,36 @@ export async function listSharesForFolder(folderId: string): Promise<Share[]> {
   return (res.Items ?? []) as Share[];
 }
 
+/**
+ * Bumped on every `openShare`, which is a page load and not a person: a reload
+ * counts again, and one viewer scrolling a roll twice reads as two. It is a
+ * traffic signal, not analytics.
+ *
+ * `ADD` on a missing attribute starts at zero, so old shares need no backfill.
+ * `UpdateItem` upserts, so this carries `attribute_exists` for the same reason
+ * `updatePhoto` does: revoke a link while someone is loading it and an unguarded
+ * bump would resurrect the row from its key — a share with no folder, no hash
+ * fields, and no TTL, which is a link that cannot be revoked again. A counter is
+ * never worth failing the view over, so the race is logged and swallowed.
+ */
+export async function recordShareView(tokenHash: string): Promise<void> {
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: TABLE,
+        Key: { pk: sharePk(tokenHash), sk: 'META' },
+        UpdateExpression: 'ADD #v :one SET lastViewedAt = :now',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeNames: { '#v': 'views' },
+        ExpressionAttributeValues: { ':one': 1, ':now': new Date().toISOString() },
+      }),
+    );
+  } catch (err) {
+    if ((err as Error).name !== 'ConditionalCheckFailedException') throw err;
+    console.warn('Share revoked before its view count landed');
+  }
+}
+
 export async function deleteShare(tokenHash: string): Promise<void> {
   await ddb.send(
     new DeleteCommand({ TableName: TABLE, Key: { pk: sharePk(tokenHash), sk: 'META' } }),

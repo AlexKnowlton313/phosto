@@ -69,6 +69,9 @@ export interface Share {
   expiresAt?: number;
   allowDownload: boolean;
   label?: string;
+  /** Opens of the share page, not viewers: a reload counts again. */
+  views?: number;
+  lastViewedAt?: string;
 }
 
 /**

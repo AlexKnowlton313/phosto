@@ -61,6 +61,9 @@ export interface ShareSummary {
   expiresAt?: number;
   allowDownload: boolean;
   label?: string;
+  /** Opens of the share page, not viewers: a reload counts again. */
+  views?: number;
+  lastViewedAt?: string;
 }
 
 export interface ShareView {

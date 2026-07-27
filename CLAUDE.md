@@ -293,6 +293,13 @@ check. `expiresInDays: 0` creates one. Revoking is then the only thing that ends
 it, so treat `Share.expiresAt` as optional everywhere and never `<=`-compare it
 without a presence check.
 
+`views` / `lastViewedAt` are bumped by `recordShareView` in **`openShare` only** —
+never in `GET /s/<token>` or its `og.webp`, which are what a chat client
+prefetches to unfurl a link and would count opens for a message nobody clicked.
+They are page loads, not people: a reload counts again. Images are served
+straight from CloudFront, so nothing counts a photo view and nothing can without
+putting compute in the image path.
+
 ## Derivatives
 
 | Input | Preview source |

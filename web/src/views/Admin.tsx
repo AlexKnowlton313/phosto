@@ -725,6 +725,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
                 <th>Label</th>
                 <th>Created</th>
                 <th>Expires</th>
+                <th>Opens</th>
                 <th>Download</th>
                 <th />
               </tr>
@@ -740,6 +741,11 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
                     <td>{link.label ?? '·'}</td>
                     <td>{dayMonthYear(link.createdAt)}</td>
                     <td>{label}</td>
+                    {/* Shares made before counting existed have no attribute at
+                        all; a bare 0 would claim nobody opened them. */}
+                    <td title={link.lastViewedAt ? `last ${dayMonthYear(link.lastViewedAt)}` : ''}>
+                      {link.views ?? '·'}
+                    </td>
                     <td>{link.allowDownload ? 'yes' : 'no'}</td>
                     <td>
                       <button className="btn btn-danger" onClick={() => revokeShare(link)}>
@@ -755,6 +761,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           <p className="note">
             A share URL is shown once, when it is created. Only its SHA-256 is
             stored, so no link can be listed here. Revoke one and make another.
+            Opens count page loads, not people — a reload counts again, and a
+            link preview in a chat does not count at all.
           </p>
           </div>
         </details>
