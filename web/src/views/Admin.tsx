@@ -91,8 +91,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   const fileInput = useRef<HTMLInputElement>(null);
 
   // "All photos" is a pseudo-roll: it has no folder record, so it can't be
-  // renamed, shared, uploaded into or deleted, and there is nothing to detach
-  // from. Everything else about it is an ordinary contact sheet.
+  // renamed, shared or deleted, and there is nothing to detach from. Everything
+  // else about it is an ordinary contact sheet.
   const isLibrary = folderId === LIBRARY_ID;
 
   // The signed cookies, not the JWT, are what let the browser load images.
@@ -175,13 +175,16 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
     location.hash = folder.folderId;
   };
 
+  // Uploads happen from the roll index and land in the library, in no roll —
+  // which is what a photo belonging to nobody means. Filing is a second step,
+  // from All photos with "Add to roll…".
   const handleFiles = async (files: FileList | null) => {
-    if (!files?.length || !current) return;
+    if (!files?.length) return;
     const list = [...files];
     setError(undefined);
 
     try {
-      const { uploads } = await api.requestUploads(current.folderId, list);
+      const { uploads } = await api.requestUploads(list);
       const byName = new Map(list.map((f) => [f.name, f]));
       const progress = new Array<number>(uploads.length).fill(0);
 
@@ -220,7 +223,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       );
 
       setUpload(undefined);
-      await refresh();
+      // Land on the sheet the frames actually went to; the hash change loads it.
+      location.hash = LIBRARY_ID;
     } catch (err) {
       setUpload(undefined);
       setError((err as Error).message);
@@ -371,9 +375,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   };
 
   /**
-   * Destroys the photographs themselves. Spelled out in the confirm because this
-   * is the only irreversible action in the app, and it sits next to "Remove from
-   * roll", which looks similar and undoes nothing.
+   * Destroys the photographs themselves — the only irreversible action in the
+   * app, which is why it is offered from All photos only and still confirms.
    */
   const destroySelected = async () => {
     const ids = [...selected];
@@ -381,7 +384,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       !window.confirm(
         `Permanently delete ${ids.length} photograph(s)?\n\n` +
           'This removes the originals and RAWs from every roll they are in. ' +
-          'To take them out of just this roll, use Remove from roll.',
+          'To take them out of one roll, open that roll and use Remove from roll.',
       )
     ) {
       return;
@@ -397,7 +400,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         setStatus(`Deleted ${done} of ${ids.length}…`);
       }
     } catch (err) {
-      setError(`${(err as Error).message} — ${ids.length - done} not deleted`);
+      setError(`${(err as Error).message} (${ids.length - done} not deleted)`);
     } finally {
       setStatus(undefined);
       clear();
@@ -497,9 +500,26 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         </header>
 
         <div className="toolbar">
-          <button className="btn" onClick={newFolder}>
+          <button className="btn" disabled={Boolean(upload)} onClick={newFolder}>
             New roll
           </button>
+          {/* The only upload in the app. Frames go to the library, not to a
+              roll — nothing here has to answer "which one". */}
+          <button
+            className="btn"
+            disabled={Boolean(upload)}
+            onClick={() => fileInput.current?.click()}
+          >
+            Add photos
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            accept=".jpg,.jpeg,.png,.heic,.heif,.hif,.raf,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2"
+            hidden
+            onChange={(e) => handleFiles(e.target.files)}
+          />
           <div className="spacer" />
           <button
             className="btn"
@@ -516,49 +536,53 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           </button>
         </div>
 
+        {upload && (
+          <>
+            <div className="progress">
+              <div className="progress-bar" style={{ width: `${upload.fraction * 100}%` }} />
+            </div>
+            <p className="note" style={{ padding: '8px 24px' }}>
+              Uploading {upload.done} of {upload.total}…
+            </p>
+          </>
+        )}
+
         {error && <p className="error" style={{ padding: '16px 24px' }}>{error}</p>}
 
-        {folders?.length === 0 ? (
-          <div className="empty">
-            <h2>No rolls yet</h2>
-            <p className="note">Create one, then drop your JPEGs and RAFs into it.</p>
-          </div>
-        ) : (
-          <div className="rolls">
-            {/* First, and always present even with no rolls at all: it is the
-                library itself, and the only place a photograph in no roll can
-                be reached from. */}
+        {/* No empty state here any more. Uploads land in the library before any
+            roll exists, so zero rolls is the ordinary first state — and hiding
+            the list would hide the one tile that reaches the frames. */}
+        <div className="rolls">
+          {/* First, and always present even with no rolls at all: it is the
+              library itself, and the only place a photograph in no roll can
+              be reached from. */}
+          <button className="roll" onClick={() => (location.hash = LIBRARY_ID)}>
+            <div className="roll-text">
+              <div className="roll-name">All photos</div>
+              <div className="roll-meta">every frame, in no roll in particular</div>
+            </div>
+          </button>
+
+          {folders?.map((folder) => (
             <button
-              className="roll"
-              onClick={() => (location.hash = LIBRARY_ID)}
+              key={folder.folderId}
+              className={folder.coverPhotoId ? 'roll roll-cover' : 'roll'}
+              onClick={() => (location.hash = folder.folderId)}
             >
+              {folder.coverPhotoId && (
+                // alt="" so a deleted cover collapses to the plain tile rather
+                // than a broken-image icon. No JS fallback needed.
+                <img src={`/f/${folder.coverPhotoId}/thumb.webp`} alt="" />
+              )}
               <div className="roll-text">
-                <div className="roll-name">All photos</div>
-                <div className="roll-meta">every frame, in no roll in particular</div>
+                <div className="roll-name">{folder.name}</div>
+                <div className="roll-meta">
+                  {folder.photoCount} {folder.photoCount === 1 ? 'frame' : 'frames'}
+                </div>
               </div>
             </button>
-
-            {folders?.map((folder) => (
-              <button
-                key={folder.folderId}
-                className={folder.coverPhotoId ? 'roll roll-cover' : 'roll'}
-                onClick={() => (location.hash = folder.folderId)}
-              >
-                {folder.coverPhotoId && (
-                  // alt="" so a deleted cover collapses to the plain tile rather
-                  // than a broken-image icon. No JS fallback needed.
-                  <img src={`/f/${folder.coverPhotoId}/thumb.webp`} alt="" />
-                )}
-                <div className="roll-text">
-                  <div className="roll-name">{folder.name}</div>
-                  <div className="roll-meta">
-                    {folder.photoCount} {folder.photoCount === 1 ? 'frame' : 'frames'}
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
+          ))}
+        </div>
       </>
     );
   }
@@ -581,71 +605,6 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           ← All rolls
         </button>
 
-        {/* Uploads need a roll to land in. From the library there is no answer to
-            "which one", so the button is simply not offered. */}
-        {!isLibrary && (
-          <>
-            <button
-              className="btn"
-              disabled={batching}
-              onClick={() => fileInput.current?.click()}
-            >
-              Add photos
-            </button>
-            <input
-              ref={fileInput}
-              type="file"
-              multiple
-              accept=".jpg,.jpeg,.png,.heic,.heif,.hif,.raf,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2"
-              hidden
-              onChange={(e) => handleFiles(e.target.files)}
-            />
-          </>
-        )}
-
-        {selected.size > 0 && (
-          <>
-            <span className="note">{selected.size} selected</span>
-            {selectable(photos ?? [], selected, 'original').length > 0 && (
-              <button
-                className="btn"
-                disabled={batching}
-                onClick={() => downloadSelected('original')}
-              >
-                Download JPEGs
-              </button>
-            )}
-            {selectable(photos ?? [], selected, 'raw').length > 0 && (
-              <button
-                className="btn btn-negatives"
-                disabled={batching}
-                onClick={() => downloadSelected('raw')}
-              >
-                Download RAWs
-              </button>
-            )}
-            {/* Adds, never moves — a frame can be in several rolls. Needs at
-                least one roll that is not the one being looked at. */}
-            {(folders ?? []).some((f) => f.folderId !== current.folderId) && (
-              <button className="btn" disabled={batching} onClick={addToRoll}>
-                Add to roll…
-              </button>
-            )}
-            {!isLibrary && (
-              <button className="btn" disabled={batching} onClick={removeFromRoll}>
-                Remove from roll
-              </button>
-            )}
-            {/* Safelight red, and last: this is the one action here that destroys
-                a photograph rather than a pointer at one. */}
-            <button className="btn btn-danger" disabled={batching} onClick={destroySelected}>
-              Delete photos
-            </button>
-            <button className="btn" onClick={clear}>
-              Clear
-            </button>
-          </>
-        )}
 
         <div className="spacer" />
 
@@ -676,17 +635,6 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           </button>
         )}
       </div>
-
-      {upload && (
-        <>
-          <div className="progress">
-            <div className="progress-bar" style={{ width: `${upload.fraction * 100}%` }} />
-          </div>
-          <p className="note" style={{ padding: '8px 24px' }}>
-            Uploading {upload.done} of {upload.total}…
-          </p>
-        </>
-      )}
 
       {/* Three fields is one dialog too many for the window.prompt convention the
           rest of this view uses, so the create flow is inline instead. */}
@@ -744,7 +692,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       {created && (
         <div style={{ padding: '16px 24px' }} className="stack">
           <label htmlFor="share-url">
-            Share link — expires in {created.expiresInDays}
+            Share link, expires in {created.expiresInDays}
             {created.expiresInDays === 1 ? ' day' : ' days'}
           </label>
           <div className="share-link" id="share-url">
@@ -758,7 +706,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
               Copy link
             </button>
           </div>
-          <p className="note">Copy it now — only its hash is stored, so this is the
+          <p className="note">Copy it now. Only its hash is stored, so this is the
             one time it can be shown.</p>
         </div>
       )}
@@ -784,7 +732,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
                 const { expired, label } = expiry(link.expiresAt);
                 return (
                   <tr key={link.id} className={expired ? 'expired' : undefined}>
-                    <td>{link.label ?? '—'}</td>
+                    <td>{link.label ?? '·'}</td>
                     <td>{dayMonthYear(link.createdAt)}</td>
                     <td>{label}</td>
                     <td>{link.allowDownload ? 'yes' : 'no'}</td>
@@ -801,7 +749,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           </div>
           <p className="note">
             A share URL is shown once, when it is created. Only its SHA-256 is
-            stored, so no link can be listed here — revoke one and make another.
+            stored, so no link can be listed here. Revoke one and make another.
           </p>
         </div>
       )}
@@ -818,9 +766,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           <h2>{isLibrary ? 'No photos yet' : 'Empty roll'}</h2>
           <p className="note">
             {isLibrary
-              ? 'Open a roll and add JPEGs and RAFs to it.'
-              : 'Add JPEGs and RAFs together — matching filenames become one frame. ' +
-                'Or add frames already in the library from All photos.'}
+              ? 'Add photos from the roll index. JPEGs and RAFs with matching ' +
+                'filenames become one frame.'
+              : 'Nothing here yet. Select frames in All photos and add them to this roll.'}
           </p>
         </div>
       ) : (
@@ -832,6 +780,58 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         />
       )}
 
+      {/* Selection actions act on the selection, not on the roll, so they get
+          their own bar at the foot of the sheet rather than appearing and
+          disappearing inside the roll's toolbar. */}
+      {selected.size > 0 && (
+        <div className="toolbar toolbar-footer">
+          <span className="note">{selected.size} selected</span>
+          {selectable(photos ?? [], selected, 'original').length > 0 && (
+            <button
+              className="btn"
+              disabled={batching}
+              onClick={() => downloadSelected('original')}
+            >
+              Download JPEGs
+            </button>
+          )}
+          {selectable(photos ?? [], selected, 'raw').length > 0 && (
+            <button
+              className="btn btn-negatives"
+              disabled={batching}
+              onClick={() => downloadSelected('raw')}
+            >
+              Download RAWs
+            </button>
+          )}
+          {/* Adds, never moves — a frame can be in several rolls. Needs at
+              least one roll that is not the one being looked at. */}
+          {(folders ?? []).some((f) => f.folderId !== current.folderId) && (
+            <button className="btn" disabled={batching} onClick={addToRoll}>
+              Add to roll…
+            </button>
+          )}
+          {/* Exactly one of these two, never both. Inside a roll the answer to
+              "get rid of this" is almost always "take it out of this roll", and
+              the destructive twin sitting beside it is a misclick that loses a
+              negative. Destroying a photograph is offered from All photos only,
+              where it is unambiguous — there is no roll to have meant instead. */}
+          {isLibrary ? (
+            <button className="btn btn-danger" disabled={batching} onClick={destroySelected}>
+              Delete photos
+            </button>
+          ) : (
+            <button className="btn" disabled={batching} onClick={removeFromRoll}>
+              Remove from roll
+            </button>
+          )}
+          <div className="spacer" />
+          <button className="btn" onClick={clear}>
+            Clear
+          </button>
+        </div>
+      )}
+
       {openIndex !== undefined && shown && (
         <Lightbox
           photos={shown}
@@ -839,8 +839,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
           onClose={() => setOpenIndex(undefined)}
           onNavigate={setOpenIndex}
           onDownload={download}
-          onDelete={removePhoto}
-          // The library has no roll to be the cover of.
+          // Same split as the footer: destroying a frame is an All photos
+          // action, setting a cover is a roll one. Neither view offers both.
+          onDelete={isLibrary ? removePhoto : undefined}
           onSetCover={isLibrary ? undefined : setCover}
         />
       )}

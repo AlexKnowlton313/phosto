@@ -149,9 +149,10 @@ export const adminApi = (token: string) => ({
   /** Every photo, in no roll in particular. Backs the All photos view. */
   listLibrary: () => request<{ photos: PhotoView[] }>('/api/photos', {}, token),
 
-  requestUploads: (folderId: string, files: File[]) =>
+  /** Frames land in the library, in no roll. Filing them is `attachPhotos`. */
+  requestUploads: (files: File[]) =>
     request<{ uploads: Array<{ filename: string; url: string; photoId: string }> }>(
-      `/api/folders/${folderId}/uploads`,
+      '/api/uploads',
       {
         method: 'POST',
         body: JSON.stringify({

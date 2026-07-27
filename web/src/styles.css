@@ -43,9 +43,15 @@
 }
 
 html,
-body,
-#root {
+body {
   height: 100%;
+}
+
+/* min-height, not height: a sticky element is clamped to its containing block,
+   so a 100vh-tall #root with the sheet overflowing out of it would let the
+   selection bar scroll away instead of staying pinned to the foot. */
+#root {
+  min-height: 100%;
 }
 
 body {
@@ -163,6 +169,15 @@ button {
   position: sticky;
   top: 0;
   z-index: 20;
+}
+
+/* Sticky to the bottom rather than fixed, so it reserves its own space in flow
+   and can never sit on top of the last row of frames. */
+.toolbar-footer {
+  top: auto;
+  bottom: 0;
+  border-bottom: 0;
+  border-top: 1px solid var(--line);
 }
 
 .spacer {

@@ -27,10 +27,16 @@ export function Lightbox({
 
   // Move focus into the dialog on open and hand it back to the grid on close,
   // so keyboard and screen-reader users are not left behind the overlay.
+  // Only if the frame was keyboard-focused to begin with: a programmatic
+  // .focus() matches :focus-visible, so restoring it to a frame the user merely
+  // clicked leaves the amber ring painted on the cell after the lightbox closes.
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
+    const restore = previous?.matches(':focus-visible') ?? false;
     dialog.current?.focus();
-    return () => previous?.focus?.();
+    return () => {
+      if (restore) previous?.focus?.();
+    };
   }, []);
 
   useEffect(() => {

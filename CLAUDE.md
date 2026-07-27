@@ -8,7 +8,7 @@ Self-hosted photo gallery on AWS. One library of photographs; folders are sets o
 pointers into it, so a frame can be in several rolls or none. Unlisted share links
 per roll, RAW files owner-only. Live at `photos.alex-knowlton.com`, single admin,
 ~$0.29/month all-in — of which ~$0.20 is storage once RAW ages into Glacier IR
-(`docs/cost-estimate.md`).
+(`COSTS.md`).
 
 ## Layout
 
@@ -16,8 +16,7 @@ per roll, RAW files owner-only. Live at `photos.alex-knowlton.com`, single admin
 infra/      CDK stack — the single source of truth for all AWS resources
 functions/  api (HTTP handler) + derive (S3-triggered image pipeline) + shared/
 web/        Vite + React. Admin UI and the public share view
-scripts/    key bootstrap, bulk uploader, dev fixture generator
-docs/       architecture.md, cost-estimate.md
+scripts/    key bootstrap
 ```
 
 ## Commands
@@ -29,7 +28,6 @@ npm run dev --workspace web        # vite on :5173
 npm run build:layer                # sharp + libheif-js for linux-arm64
 npm run diff                       # cdk diff
 npm run deploy                     # layer + web build + cdk deploy
-npm run migrate:flat -- --dry-run  # one-time, see "Migrating" below
 ```
 
 **There is no test suite** — no runner, no test files, no `npm test`. Don't go
@@ -270,6 +268,13 @@ JPEG wins as the preview source; the RAF path only runs for RAW-only photos. The
 batch is capped at 200 files in `createUploads` and the admin UI does not chunk, so
 dropping more than that on it fails the whole selection with a 400.
 
+`POST /api/uploads` takes **no folder**. Uploading is the one way a photograph
+enters the library and it is offered from exactly one place — the roll index, via
+*Add photos* — so there is never a "which roll did this go to". Frames land with
+no membership and the UI drops you on *All photos* afterwards; filing them is
+`PUT /api/folders/<id>/photos`, the same route *Add to roll…* already used. There
+is no importer script any more: the UI is the only way in.
+
 Attach and detach carry **no batch cap**: each is one transaction and touches no
 S3. The old move route was capped at ten because every photo cost a transaction
 plus two `CopyObject`s against a 15-second timeout.
@@ -307,18 +312,15 @@ JPEG sibling, so it has only ever run locally.
 
 ## Working on the frontend
 
-No deployed stack needed. The fixture generator writes real derivatives from a
-folder of photos, and `vite.config.ts` serves them for any `/api/share/*` request:
+`npm run dev --workspace web` and work against the deployed stack: `vite.config.ts`
+proxies `/api` and `/f` to it and rewrites the image cookie's domain to localhost,
+which is the only way those cookies survive the hop. Open a real `/s/<token>` to
+work on the share view. There was a fixture generator for doing this with no stack
+at all; it is gone, and with it `scripts/`'s only dependencies — `bootstrap-keys`
+is plain node, so `scripts/` is no longer a workspace.
 
-```bash
-npm run preview:fixture -- --src /Volumes/Untitled/DCIM/100_FUJI --name "Roll" [--limit 24]
-```
-
-Then `npm run dev --workspace web` and open `/s/anything`.
-
-`make-preview.mjs` writes at production derivative sizes (400 / 2400) on purpose —
-a smaller fixture is what hid the lightbox bug. Don't shrink it to speed the script
-up.
+Test the lightbox at full derivative size (400 / 2400). A downscaled stand-in is
+what hid the `max-height` bug the landmines list names.
 
 `/s/<token>` is the only client-side route. `App.tsx` matches it before touching
 Cognito, so a share viewer never loads the auth path; everything else is the admin
@@ -327,10 +329,24 @@ UI behind sign-in.
 The admin is folder-first with **All photos** as the first entry in the roll list.
 That entry is a pseudo-roll: `LIBRARY_ID` (`'all'`) is not a folder id the server
 knows, so `Admin.tsx` synthesises a `FolderView` for it and `isLibrary` gates
-everything a real roll has and it doesn't — upload, rename, share, cover, delete
-roll, and Remove from roll. *Add to roll* and *Delete photos* work from both.
-"Remove from roll" and "Delete photos" sit next to each other and look alike, so
-the destructive one is safelight red and its confirm spells out the difference.
+everything a real roll has and it doesn't — rename, share, cover, delete roll, and
+Remove from roll. *Add to roll* works from both. Upload is on neither: it lives on
+the roll index, above both of them, because a frame arrives in the library.
+
+**Destroying a photograph is an All photos action only.** A roll offers "Remove
+from roll"; All photos offers "Delete photos" — never both, in the selection bar
+or in the lightbox. Inside a roll "get rid of this" nearly always means "take it
+out of this roll", and the two used to sit side by side looking alike, which made
+one misclick the difference between a pointer and a negative. From All photos
+there is no roll it could have meant instead. It is still safelight red and still
+confirms.
+
+Selection actions live in `.toolbar-footer`, a sticky bar at the foot of the
+sheet, not in the roll toolbar — they act on the selection, not the roll. It is
+sticky rather than fixed so it reserves its own space and cannot cover the last
+row, which is why `#root` is `min-height: 100%` and not `height`: a sticky
+element is clamped to its containing block, and a 100vh-tall root would let the
+bar scroll away.
 
 The web bundle holds no account-specific values: CDK writes `config.json` into the
 bucket at deploy time via `Source.jsonData`, and `loadConfig()` fetches it at
@@ -349,59 +365,14 @@ destructive actions only. Keep accents doing exactly one job.
 
 ## Importing
 
-```bash
-npm run upload -- --folder "Name" --src <dir> [--since YYYY-MM-DD] [--until YYYY-MM-DD]
-                  [--dry-run] [--reset]
-```
+Through the admin UI only — *Add photos* on the roll index. There used to be a
+`npm run upload` script that talked to S3 and DynamoDB directly, with a resumable
+state file, EXIF date filters and `._` sidecar filtering; it is gone. Uploads now
+go through `POST /api/uploads` like everything else, which means one code path
+that can create a photograph instead of two that had to agree on the record shape.
 
-Talks to S3/DynamoDB directly rather than through the API, resolving stack outputs
-from CloudFormation. Resumable via `scripts/.upload-state.json`, keyed per folder;
-`--reset` discards that state and starts the folder over. `--dry-run` first — it
-reports the pairing and byte totals without uploading.
-
-`--since`/`--until` filter on EXIF `DateTimeOriginal`, which carries no timezone
-and is deliberately **not** converted: the date means the date where the camera
-was.
-
-macOS writes `._NAME` AppleDouble sidecars onto FAT cards — 4 KB of metadata with a
-real image extension. They must stay filtered or they upload as corrupt photos.
-
-It writes the Photo item **and** its membership. The photo lands in the library
-either way; the membership is what puts it in the named roll.
-
-## Migrating (one time, from folder-owned keys)
-
-`scripts/migrate-flat.mjs` converts a library written under the old
-`f/<folderId>/<photoId>/…` layout. It has not been run yet.
-
-```bash
-npm run migrate:flat -- --dry-run   # always
-npm run migrate:flat                # steps 1-3: records, then copy sources
-npm run migrate:flat -- --sweep     # steps 4-5, once every derive has landed
-```
-
-**Records before bytes**, the ordering rule the old move path lived by: derive
-looks a photo up by the id in the key and silently drops the event if there is no
-record, so an object landing first gets no derivatives, permanently. Copying into
-`orig/` retriggers derive, which writes the flat derivatives itself — the script
-never copies a derivative by hand. `--sweep` refuses while any photo still lacks
-`derivedAt`, because it deletes the last copy of the originals.
-
-Currently-hidden frames migrate to a Photo record with **no** membership: "in my
-library, out of every share" is exactly what belonging to no roll now means. The
-script names them rather than counting them.
-
-**Cost turns entirely on where `raw/` is when you run it.** Measured 2026-07-26,
-every RAF was still `STANDARD` — the lifecycle rule moves them at 30 days — so the
-run was ~$0.01 in requests plus ~$0.15 of derive Lambda. Once they have aged into
-Glacier IR the same run costs ~$0.60 more (reading 11.89 GB out at $0.03/GB, plus
-a month of the copies in Standard), and GIR's 90-day minimum bills the remainder on
-any RAW deleted early. Check the storage class before assuming either number.
-
-The library is doubled between the copy and the sweep, so run it in one sitting.
-Steps 1-3 are idempotent — the Puts overwrite and `CopyObject` overwrites — so
-re-running the non-sweep phase after a failure is safe. `--sweep` is not: it is
-the step that deletes the last copy of the originals.
+The 200-file cap and the lack of chunking in the UI is the ceiling that replaces
+it. A card dump larger than that has to go in batches.
 
 ## Operational notes
 

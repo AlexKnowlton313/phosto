@@ -6,7 +6,7 @@ that stay out of sight until you ask for them.
 Built for a Fujifilm workflow where every shot is a JPEG + RAF pair, but the RAF is
 only interesting to about three people.
 
-- **~$0.29/month** for an 18 GB library — see [docs/cost-estimate.md](docs/cost-estimate.md)
+- **~$0.29/month** for an 18 GB library — see [COSTS.md](COSTS.md)
 - Nothing is publicly readable; every photo byte is behind a CloudFront signature
 - RAWs sit in a separate prefix that share links structurally cannot reach
 
@@ -18,16 +18,13 @@ RAF files, by extracting the embedded JPEG with two range requests instead of
 downloading 30 MB. The gallery only ever loads derivatives; originals and RAWs need
 an explicit click.
 
-See [docs/architecture.md](docs/architecture.md) for the full picture.
-
 ## Layout
 
 ```
 infra/      AWS CDK stack (S3, CloudFront, DynamoDB, Cognito, API Gateway, Lambda)
 functions/  api handler + derivative generator
 web/        Vite + React admin UI and public share view
-scripts/    key bootstrap, bulk uploader for an existing library
-docs/       architecture and cost notes
+scripts/    key bootstrap
 ```
 
 ## Setup
@@ -72,14 +69,12 @@ Create your single admin user:
 aws cognito-idp admin-create-user --user-pool-id <POOL_ID> --username you@example.com
 ```
 
-## Importing an existing library
+## Importing photos
 
-The bulk uploader pairs JPEG and RAW by basename, skips macOS `._` sidecar files,
-and uses multipart uploads with a resumable state file.
-
-```bash
-npm run upload -- --folder "Summer 2026" --src /Volumes/Untitled/DCIM/100_FUJI
-```
+Uploads happen in the admin UI, from the roll index — **Add photos**. JPEG and RAW
+files with a matching basename (`XT300024.JPG` + `.RAF`) become one frame. Uploaded
+frames land in the library and in no roll; file them from **All photos** with *Add
+to roll*.
 
 ## Development
 
@@ -89,13 +84,8 @@ npm run typecheck
 npm run build:web
 ```
 
-To work on the gallery without a deployed stack, build a fixture from a folder of
-real photos and run the dev server. Vite serves the fixture for any `/api/share/*`
-request, so `/s/anything` renders a working contact sheet.
-
-```bash
-npm run preview:fixture -- --src /Volumes/Untitled/DCIM/100_FUJI --name "Cascade Loop"
-```
+The dev server proxies `/api` and `/f` to the deployed stack, so run it against
+real data — a real share link included.
 
 ```bash
 npm run dev --workspace web

@@ -188,7 +188,7 @@ export function EdgeHeader({
       ? null
       : format(dates[0]) === format(dates[dates.length - 1])
         ? format(dates[0])
-        : `${format(dates[0])} — ${format(dates[dates.length - 1])}`;
+        : `${format(dates[0])} to ${format(dates[dates.length - 1])}`;
 
   // A roll is usually one body; only name it when that is actually true.
   const cameras = [...new Set(photos.map((p) => p.camera).filter(Boolean))];

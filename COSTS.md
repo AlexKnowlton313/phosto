@@ -40,9 +40,6 @@ gallery path, while the gallery serves small derivatives instead of originals.
 | 20× growth, busy sharing | 360 GB | $4.00 | $0.28 | $4.28 |
 | 1 TB library | 1 TB | $11.34 | $0.34 | $11.68 |
 
-One-time migration of the existing 18 GB: **~$0.01**. Ingress is free; the cost is
-~4,200 PUT requests at $0.005/1,000.
-
 Route53 hosted zone ($0.50/mo) is already being paid for the parent domain. The ACM
 certificate is free.
 

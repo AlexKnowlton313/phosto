@@ -195,11 +195,12 @@ interface UploadRequestFile {
  * Files are grouped by basename first, so XT300024.JPG and XT300024.RAF become one
  * photo with two objects rather than two unrelated photos. That grouping is the
  * whole reason uploads are requested as a batch instead of one file at a time.
+ *
+ * Uploads land in the library and in no roll: a photo is owned by nobody, so
+ * there is no folder in this path and no membership written. Filing a frame is
+ * `PUT /api/folders/<id>/photos`, afterwards and separately.
  */
-async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
-  const folder = await db.getFolder(folderId);
-  if (!folder) throw new HttpError(404, 'Folder not found');
-
+async function createUploads(event: APIGatewayProxyEventV2) {
   const { files } = parseBody<{ files?: UploadRequestFile[] }>(event);
   if (!files?.length) throw new HttpError(400, 'files[] is required');
   if (files.length > 200) throw new HttpError(400, 'Batch limited to 200 files');
@@ -237,11 +238,10 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
       rawExt: raw ? extensionOf(raw.filename) : undefined,
       rawBytes: raw?.size,
     };
-    // The record, then its membership. Uploading into a roll is the ordinary
-    // case, but the photo exists in the library either way — a failure between
-    // the two leaves a frame in "All photos" rather than a frame nothing names.
+    // Records before bytes: derive looks a photo up by the id in the key and
+    // drops the event if there is no record, so an object landing first gets no
+    // derivatives, permanently.
     await db.putPhoto(photo);
-    await db.attachPhoto(folderId, photo);
     created += 1;
 
     for (const file of groupFiles) {
@@ -264,9 +264,7 @@ async function createUploads(event: APIGatewayProxyEventV2, folderId: string) {
     }
   }
 
-  // No count bump here — `attachPhoto` carries it inside the same transaction as
-  // the membership, so the roll can never claim a number its member list denies.
-  console.log('Uploads issued', { folderId, photos: created, objects: uploads.length });
+  console.log('Uploads issued', { photos: created, objects: uploads.length });
   return json(200, { uploads });
 }
 
@@ -732,12 +730,6 @@ const routes: Array<{
       json(200, { photos: await asAdmin(await db.listPhotos(folderId)) }),
   },
   {
-    method: 'POST',
-    pattern: /^\/api\/folders\/([\w-]+)\/uploads$/,
-    admin: true,
-    handle: (event, [folderId]) => createUploads(event, folderId),
-  },
-  {
     // Attach and detach. Not the same thing as destroying the photograph, which
     // is `DELETE /api/photos/<id>` and is the only route that can lose an image.
     method: 'PUT',
@@ -758,6 +750,13 @@ const routes: Array<{
     pattern: /^\/api\/photos$/,
     admin: true,
     handle: async () => json(200, { photos: await asAdmin(await db.listLibrary()) }),
+  },
+  {
+    // Uploads go to the library, never to a roll — hence no folder id here.
+    method: 'POST',
+    pattern: /^\/api\/uploads$/,
+    admin: true,
+    handle: (event) => createUploads(event),
   },
   {
     method: 'DELETE',

@@ -7,8 +7,7 @@
   "workspaces": [
     "infra",
     "functions",
-    "web",
-    "scripts"
+    "web"
   ],
   "engines": {
     "node": ">=20"
@@ -19,9 +18,6 @@
     "build:web": "npm run build --workspace web",
     "deploy": "npm run build:layer && npm run build --workspace web && npm run deploy --workspace infra",
     "diff": "npm run diff --workspace infra",
-    "upload": "node scripts/bulk-upload.mjs",
-    "migrate:flat": "node scripts/migrate-flat.mjs",
-    "preview:fixture": "node scripts/make-preview.mjs",
     "typecheck": "tsc -p infra --noEmit && tsc -p functions --noEmit && tsc -p web --noEmit"
   }
 }

@@ -10,7 +10,6 @@ cdk.out/
 infra/.env
 web/.env.local
 web/public/config.json
-scripts/.upload-state.json
 
 # CloudFront signing keys — public PEM is committed-safe but keep both out by default
 infra/keys/
@@ -25,7 +24,6 @@ functions/layers/*/nodejs/
 infra/config.json
 
 # Local preview fixtures (generated from a real card)
-web/public/__preview/
 
 # CDK lookup cache (embeds the account id; keep out of a public repo)
 infra/cdk.context.json
