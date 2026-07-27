@@ -173,9 +173,8 @@ export async function bumpPhotoCount(folderId: string, delta: number): Promise<v
  * is gone. Cascading here rather than in the route so no later caller can delete a
  * folder and forget.
  *
- * This is what used to need the orphan roll. A folder holds pointers, not images,
- * so deleting one now removes pointers — the photos stay in the library, reachable
- * from "All photos" and from any other roll they are in.
+ * A folder holds pointers, not images, so this removes pointers only — the photos
+ * stay in the library and in any other roll they are in.
  *
  * ponytail: serial deletes, one round trip each. A 200-frame roll is ~2s inside a
  * 15s budget; switch to BatchWriteItem in 25s if rolls get much larger.
@@ -304,8 +303,8 @@ async function batchGetPhotos(photoIds: string[]): Promise<Photo[]> {
 /**
  * One folder's photos: its memberships, then the photo records they point at.
  *
- * Two round trips where it used to be one, because the photo no longer lives in
- * the folder's partition. The alternative — copying photo fields onto every
+ * Two round trips, because the photo does not live in the folder's partition.
+ * The alternative — copying photo fields onto every
  * membership — would mean every EXIF correction from derive fanning out to each
  * roll the frame is in, which is the trade that goes wrong later.
  *
@@ -320,9 +319,8 @@ export async function listPhotos(folderId: string): Promise<Photo[]> {
 }
 
 /**
- * Returns false when the record is no longer there — deleted while the caller was
- * working. (It can no longer be "moved": nothing about a photo's key depends on a
- * folder any more.)
+ * Returns false when the record is not there — deleted while the caller was
+ * working.
  *
  * The condition is the whole point. UpdateItem *upserts*, and every caller here
  * holds an item it read earlier: derive reads the photo, then spends seconds
@@ -430,9 +428,9 @@ export async function attachPhoto(
 /**
  * Takes one photo out of one folder. Returns false if it was not in it.
  *
- * Never touches the photo or its bytes — that is the entire difference from the
- * move this replaces, and why it needs no S3 work, no ordering rule and no batch
- * cap. The cover is dropped in the same transaction when it named this frame, or
+ * Never touches the photo or its bytes, which is why it needs no S3 work, no
+ * ordering rule and no batch cap. The cover is dropped in the same transaction
+ * when it named this frame, or
  * the roll card goes on advertising a photo it no longer contains.
  */
 export async function detachPhoto(folder: Folder, photoId: string): Promise<boolean> {

@@ -93,9 +93,8 @@ from.** Detaching a photo from a roll changes no bytes — they may be in other
 rolls — so a URL already issued keeps working until it expires (`SHARE_TTL`, 12h).
 There is no server-side revocation, and an invalidation does not help: the object
 still exists and the signature is still valid. Shorten `SHARE_TTL` if that window
-matters. This is inherent to a flat store, not an oversight — the previous model
-bought instant revocation by moving bytes, which is exactly what a photo in
-several rolls cannot do.
+matters. This is inherent to a flat store: instant revocation means moving bytes,
+which is exactly what a photo in several rolls cannot do.
 
 **Deleting still needs the edge.** Derivatives are written `immutable, max-age=1y`
 and `f/*` is on `CACHING_OPTIMIZED`, so removing the object at the origin does not
@@ -196,7 +195,7 @@ the index.
   query strings `none`, so CloudFront drops it before S3. Download filenames come
   from `saveAs()` and `<a download>` in `web/src/api.ts` — same-origin, so the
   attribute is honored.
-- **`/s/*` is not a static route any more.** It has its own CloudFront behavior
+- **`/s/*` is not a static route.** It has its own CloudFront behavior
   pointing at the API Lambda, which renders `index.html` with the folder's OG
   tags injected before `</head>` so link previews show the roll name and cover
   (`GET /s/<token>` and `GET /s/<token>/og.webp` in `functions/api/index.ts`,
@@ -258,31 +257,25 @@ sort by `takenAt` after reading. Listing a folder is therefore two round trips: 
 alternative — copying photo fields onto every membership — would make each EXIF
 correction fan out to every roll the frame is in.
 
-`getPhoto` is a point read now that `photoId` is the partition key. It used to be
-a filtered query across a folder partition, and was documented as the first thing
-that would stop scaling.
-
 A JPEG and a RAW sharing a basename (`XT300024.JPG` + `.RAF`) are **one** photo
 with `hasRaw: true`. That pairing is why uploads are requested as a batch. The
 JPEG wins as the preview source; the RAF path only runs for RAW-only photos. The
 batch is capped at 200 files in `createUploads` and the admin UI does not chunk, so
 dropping more than that on it fails the whole selection with a 400.
 
-`POST /api/uploads` takes **no folder**. Uploading is the one way a photograph
-enters the library and it is offered from exactly one place — the roll index, via
-*Add photos* — so there is never a "which roll did this go to". Frames land with
-no membership and the UI drops you on *All photos* afterwards; filing them is
-`PUT /api/folders/<id>/photos`, the same route *Add to roll…* already used. There
-is no importer script any more: the UI is the only way in.
+`POST /api/uploads` takes **no folder**, and it is the only way a photograph
+enters the library. The UI offers it from exactly one place — *Add photos* on the
+roll index — so there is never a "which roll did this go to". Frames land with no
+membership and the UI drops you on *All photos* afterwards; filing them is
+`PUT /api/folders/<id>/photos`, the same route *Add to roll…* uses.
 
 Attach and detach carry **no batch cap**: each is one transaction and touches no
 S3. The old move route was capped at ten because every photo cost a transaction
 plus two `CopyObject`s against a 15-second timeout.
 
 `DELETE /api/folders/<id>` never refuses. It cascades the folder's memberships and
-its shares, and every photograph survives in the library. There is no orphan roll,
-no stranded-object sweep, and no count guard — all three existed because deleting
-a folder used to be able to delete a photograph.
+its shares, and every photograph survives in the library. Nothing guards it,
+because nothing it touches is a photograph.
 
 `photoCount` is bumped inside the same transaction as the membership, so a roll
 can never claim a number its member list denies. `createUploads` does not bump it
@@ -312,12 +305,10 @@ JPEG sibling, so it has only ever run locally.
 
 ## Working on the frontend
 
-`npm run dev --workspace web` and work against the deployed stack: `vite.config.ts`
+`npm run dev --workspace web` works against the deployed stack: `vite.config.ts`
 proxies `/api` and `/f` to it and rewrites the image cookie's domain to localhost,
 which is the only way those cookies survive the hop. Open a real `/s/<token>` to
-work on the share view. There was a fixture generator for doing this with no stack
-at all; it is gone, and with it `scripts/`'s only dependencies — `bootstrap-keys`
-is plain node, so `scripts/` is no longer a workspace.
+work on the share view.
 
 Test the lightbox at full derivative size (400 / 2400). A downscaled stand-in is
 what hid the `max-height` bug the landmines list names.
@@ -336,10 +327,9 @@ the roll index, above both of them, because a frame arrives in the library.
 **Destroying a photograph is an All photos action only.** A roll offers "Remove
 from roll"; All photos offers "Delete photos" — never both, in the selection bar
 or in the lightbox. Inside a roll "get rid of this" nearly always means "take it
-out of this roll", and the two used to sit side by side looking alike, which made
-one misclick the difference between a pointer and a negative. From All photos
-there is no roll it could have meant instead. It is still safelight red and still
-confirms.
+out of this roll"; from All photos there is no roll it could have meant instead.
+Side by side the two look alike, and one misclick is the difference between a
+pointer and a negative. Safelight red, and it confirms.
 
 Selection actions live in `.toolbar-footer`, a sticky bar at the foot of the
 sheet, not in the roll toolbar — they act on the selection, not the roll. It is
@@ -365,14 +355,9 @@ destructive actions only. Keep accents doing exactly one job.
 
 ## Importing
 
-Through the admin UI only — *Add photos* on the roll index. There used to be a
-`npm run upload` script that talked to S3 and DynamoDB directly, with a resumable
-state file, EXIF date filters and `._` sidecar filtering; it is gone. Uploads now
-go through `POST /api/uploads` like everything else, which means one code path
-that can create a photograph instead of two that had to agree on the record shape.
-
-The 200-file cap and the lack of chunking in the UI is the ceiling that replaces
-it. A card dump larger than that has to go in batches.
+Through the admin UI only — *Add photos* on the roll index, which is the single
+code path that can create a photograph. The 200-file cap in `createUploads` is the
+ceiling: a card dump larger than that has to go in batches.
 
 ## Operational notes
 

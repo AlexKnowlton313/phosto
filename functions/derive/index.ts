@@ -149,10 +149,6 @@ async function processRecord(record: S3EventRecord): Promise<void> {
   // removed its objects then ran *before* these derivatives were written, leaving
   // bytes under a key no record names and nothing left that could find them
   // again. Re-read and take them back out rather than strand them.
-  //
-  // This used to catch a move as well — `pk` carried the folder, so a moved photo
-  // read as gone here too. Photos are folder-independent now; only a real delete
-  // reaches this branch.
   const current = await db.getPhoto(photoId);
   if (!current) {
     console.warn('Photo record gone; discarding derivatives just written', {

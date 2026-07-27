@@ -422,10 +422,8 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
   };
 
   /**
-   * Drops the roll. Nothing is chunked, nothing is moved out first, and no frame
-   * is at risk: a roll holds pointers, so the photographs stay in the library and
-   * in any other roll they are in. This used to orphan every frame in batches of
-   * ten before it could even try, and could still refuse.
+   * Drops the roll. No frame is at risk: a roll holds pointers, so the
+   * photographs stay in the library and in any other roll they are in.
    */
   const deleteRoll = async () => {
     if (!current || isLibrary || !photos) return;
@@ -549,9 +547,9 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
 
         {error && <p className="error" style={{ padding: '16px 24px' }}>{error}</p>}
 
-        {/* No empty state here any more. Uploads land in the library before any
-            roll exists, so zero rolls is the ordinary first state — and hiding
-            the list would hide the one tile that reaches the frames. */}
+        {/* No empty state: uploads land in the library before any roll exists, so
+            zero rolls is ordinary, and hiding the list would hide the one tile
+            that reaches the frames. */}
         <div className="rolls">
           {/* First, and always present even with no rolls at all: it is the
               library itself, and the only place a photograph in no roll can
@@ -626,9 +624,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
         </button>
         )}
 
-        {/* Safelight red because it destroys the roll, but it can no longer
-            destroy a photograph — so no chunked orphaning behind it and no
-            second label for the non-empty case. */}
+        {/* Safelight red because it destroys the roll — but not a photograph. */}
         {!isLibrary && photos && (
           <button className="btn btn-danger" disabled={batching} onClick={deleteRoll}>
             Delete roll

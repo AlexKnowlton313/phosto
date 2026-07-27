@@ -46,9 +46,9 @@ export interface Photo {
  * and cheap enough that a frame can be in as many rolls as you like.
  *
  * `uploadedAt` is carried so the item can sort itself in `gsi1` without a lookup
- * back at the photo — and it is `uploadedAt` rather than `takenAt` for the reason
- * `photoSk` used to give: derive corrects `takenAt` from EXIF afterwards, and a
- * sort key cannot be updated in place. Callers sort by `takenAt` after reading.
+ * back at the photo, and it is `uploadedAt` rather than `takenAt` because derive
+ * corrects `takenAt` from EXIF afterwards and a sort key cannot be updated in
+ * place. Callers sort by `takenAt` after reading.
  */
 export interface Membership {
   photoId: string;

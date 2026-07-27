@@ -387,6 +387,9 @@ button {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  /* The stage handles pinch and drag itself; without this the browser eats the
+     gestures as page zoom and scroll before pointermove ever fires. */
+  touch-action: none;
 }
 
 .lightbox-stage img {

@@ -378,8 +378,7 @@ function handler(event) {
           originRequestPolicy:
             cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
           // Opening a share returns a signed URL per derivative — ~189 KB of
-          // mostly-base64 for a 200-frame roll, where it used to be a few KB of
-          // relative paths plus a cookie header.
+          // mostly-base64 for a 200-frame roll.
           compress: true,
         },
         /*

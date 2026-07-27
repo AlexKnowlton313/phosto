@@ -285,9 +285,6 @@ const photoObjectKeys = (photo: Photo) => [
   ...Object.keys(DERIVATIVE_SIZES).map((name) =>
     derivedKey(photo.photoId, name as keyof typeof DERIVATIVE_SIZES),
   ),
-  // Photos derived before the middle size was dropped still have one in S3.
-  // Listed so deleting leaves no billed orphan behind.
-  `${PREFIX_DERIVED}${photo.photoId}/medium.webp`,
   ...(photo.originalExt ? [originalKey(photo.photoId, photo.originalExt)] : []),
   ...(photo.rawExt ? [rawKey(photo.photoId, photo.rawExt)] : []),
 ];
@@ -337,9 +334,7 @@ async function deleteObjects(keys: string[], what: string) {
  *
  * The only route that can remove an image from the library, and deliberately not
  * reachable from inside a roll: a roll holds pointers, so removing a frame from
- * one is `detachPhoto` and costs nothing. That separation is what retired the
- * orphan roll. Deleting a folder used to be able to lose a photograph, so photos
- * had somewhere to fall; now there is nothing to fall out of.
+ * one is `detachPhoto` and costs nothing.
  *
  * `db.deletePhoto` unpicks the memberships first, decrementing each roll's count
  * and dropping any cover that named this frame, so nothing is left listing it.
@@ -366,15 +361,9 @@ async function destroyPhoto(photoId: string) {
 }
 
 /**
- * Puts photos into a roll, or takes them out. One transaction each, no S3 work.
- *
- * This is the whole of what "move" used to be, and the contrast is the point: a
- * move copied the original into a new prefix, waited for the derive Lambda to
- * rebuild the derivatives there, swept the old keys, and was capped at ten frames
- * because each one was a transaction plus two `CopyObject`s against a 15-second
- * timeout. Membership touches no bytes, so there is no ordering rule, no
- * stranded-object state and no batch cap — the photo never moves, only the
- * pointers at it.
+ * Puts photos into a roll, or takes them out. One transaction each, and no S3
+ * work at all, so there is no ordering rule and no batch cap — the photo never
+ * moves, only the pointers at it.
  *
  * Whole batch, one report: a 404 on frame 12 would hide the thirty that worked.
  * `already` counts the no-ops so the client can say "3 were already in this roll"
@@ -464,11 +453,10 @@ async function openShare(token: string) {
     .filter((p) => p.derivedAt)
     .sort(byTakenAtDesc);
 
-  // No cookie. A photo is no longer under a folder prefix, so there is no
-  // wildcard that names this roll and nothing else — each derivative is granted
-  // on its own, which is a tighter capability than the folder-wide cookie this
-  // replaces. The trade is that detaching a frame no longer revokes anything
-  // already issued: those URLs stop working when they expire, not before.
+  // No cookie. A photo sits under no folder prefix, so there is no wildcard that
+  // names this roll and nothing else — each derivative is granted on its own.
+  // The trade: detaching a frame revokes nothing already issued. Those URLs stop
+  // working when they expire, not before.
   return json(200, {
     folder: { name: folder.name, photoCount: photos.length },
     permissions: { allowDownload: share.allowDownload },
@@ -712,12 +700,9 @@ const routes: Array<{
     pattern: /^\/api\/folders\/([\w-]+)$/,
     admin: true,
     handle: async (_e, [folderId]) => {
-      // No refusal, and nothing to check. This route used to guard twice over —
-      // once on the photo count, once on a sweep of the folder's S3 prefixes for
-      // objects an interrupted move had stranded — because deleting a folder was
-      // the one way this API could still lose a photograph. A folder holds
-      // pointers now. `deleteFolder` drops them along with the roll's shares, and
-      // every frame stays in the library.
+      // No refusal, and nothing to check: a folder holds pointers. `deleteFolder`
+      // drops them along with the roll's shares, and every frame stays in the
+      // library.
       await db.deleteFolder(folderId);
       return json(204, {});
     },

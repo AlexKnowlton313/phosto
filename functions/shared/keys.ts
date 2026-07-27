@@ -5,14 +5,9 @@ export const PREFIX_ORIGINALS = process.env.PREFIX_ORIGINALS ?? 'orig/';
 export const PREFIX_RAW = process.env.PREFIX_RAW ?? 'raw/';
 
 /**
- * No folder id in any key, and no `hidden` segment either.
- *
- * Both used to be load-bearing: the folder scoped a share cookie, and `hidden`
- * moved bytes out from under one. Neither survives a photo that can be in
- * several rolls at once — one set of bytes cannot sit under two prefixes, and a
- * CloudFront policy allows exactly one Resource statement. Shares are granted
- * per object instead, by `signObjectUrl`, so the key no longer has to encode who
- * may read it: the signature does.
+ * No folder id in any key. A photo can be in several rolls at once and one set of
+ * bytes cannot sit under two prefixes, so a key cannot encode who may read it —
+ * the signature does, per object, via `signObjectUrl`.
  */
 export const derivedKey = (photoId: string, name: DerivativeName) =>
   `${PREFIX_DERIVED}${photoId}/${name}.webp`;
@@ -25,8 +20,7 @@ export const rawKey = (photoId: string, ext: string) =>
 
 /**
  * Parses `orig/<photoId>.<ext>` or `raw/<photoId>.<ext>`. Returns null for
- * anything else, including the derivative prefix and any surviving key from the
- * old folder-scoped layout — those carry a `/` in `rest` and no longer match.
+ * anything else, the derivative prefix included.
  */
 export function parseSourceKey(key: string): {
   photoId: string;
