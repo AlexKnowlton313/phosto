@@ -1,8 +1,14 @@
 import { IMAGE_EXTS, RAW_EXTS, type DerivativeName } from './types.js';
 
-export const PREFIX_DERIVED = process.env.PREFIX_DERIVED ?? 'f/';
-export const PREFIX_ORIGINALS = process.env.PREFIX_ORIGINALS ?? 'orig/';
-export const PREFIX_RAW = process.env.PREFIX_RAW ?? 'raw/';
+/**
+ * Literals, not environment. The stack pins the same three values for its S3
+ * notification filters and CloudFront behaviors, and changing one would orphan
+ * every object already stored under it — so there is nothing to configure, only
+ * two places that have to agree.
+ */
+export const PREFIX_DERIVED = 'f/';
+export const PREFIX_ORIGINALS = 'orig/';
+export const PREFIX_RAW = 'raw/';
 
 /**
  * No folder id in any key. A photo can be in several rolls at once and one set of
@@ -48,24 +54,3 @@ export const basenameOf = (filename: string) =>
 
 export const isRawExt = (ext: string) => RAW_EXTS.includes(ext.toLowerCase());
 export const isImageExt = (ext: string) => IMAGE_EXTS.includes(ext.toLowerCase());
-
-const CONTENT_TYPES: Record<string, string> = {
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-  webp: 'image/webp',
-  heic: 'image/heic',
-  heif: 'image/heif',
-  hif: 'image/heif',
-  raf: 'image/x-fuji-raf',
-  dng: 'image/x-adobe-dng',
-  cr2: 'image/x-canon-cr2',
-  cr3: 'image/x-canon-cr3',
-  nef: 'image/x-nikon-nef',
-  arw: 'image/x-sony-arw',
-  orf: 'image/x-olympus-orf',
-  rw2: 'image/x-panasonic-rw2',
-};
-
-export const contentTypeFor = (ext: string) =>
-  CONTENT_TYPES[ext.toLowerCase()] ?? 'application/octet-stream';

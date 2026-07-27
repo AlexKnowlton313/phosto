@@ -168,13 +168,12 @@ export class PhostoStack extends cdk.Stack {
       description: 'sharp + libheif-js built for linux-arm64',
     });
 
+    // The prefixes are not passed: `functions/shared/keys.ts` holds the same three
+    // literals, because changing one would orphan every object already under it.
     const commonEnv = {
       TABLE_NAME: table.tableName,
       BUCKET_NAME: bucket.bucketName,
       DOMAIN_NAME: config.domainName,
-      PREFIX_DERIVED: PREFIX.derived,
-      PREFIX_ORIGINALS: PREFIX.originals,
-      PREFIX_RAW: PREFIX.raw,
       NODE_OPTIONS: '--enable-source-maps',
     };
 
@@ -423,7 +422,6 @@ function handler(event) {
         // Resolves the pool/client tokens at deploy time, so the JS bundle stays
         // free of account-specific values and needs no rebuild to redeploy.
         s3deploy.Source.jsonData('config.json', {
-          region: this.region,
           userPoolId: userPool.userPoolId,
           userPoolClientId: userPoolClient.userPoolClientId,
           domain: config.domainName,

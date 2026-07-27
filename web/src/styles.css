@@ -345,6 +345,40 @@ button {
   }
 }
 
+/* An empty cell developing: a light sweep across the frame, staggered per cell
+   by an inline animation-delay. `background-size` on a gradient is what moves —
+   no extra element, and nothing animates layout. */
+.frame-skeleton {
+  background-image: linear-gradient(
+    100deg,
+    var(--surface) 42%,
+    var(--surface-high) 50%,
+    var(--surface) 58%
+  );
+  background-size: 300% 100%;
+  animation: develop 1.5s ease-in-out infinite;
+}
+
+.frame-skeleton .frame-no {
+  opacity: 0.3;
+}
+
+@keyframes develop {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .frame-skeleton {
+    animation: none;
+    background-image: none;
+  }
+}
+
 .frame-pending {
   display: grid;
   place-items: center;

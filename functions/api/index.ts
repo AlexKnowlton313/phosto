@@ -14,7 +14,6 @@ import type {
 import * as db from '../shared/db.js';
 import {
   basenameOf,
-  contentTypeFor,
   derivedKey,
   extensionOf,
   isImageExt,
@@ -26,7 +25,7 @@ import {
 import {
   clearCookieHeaders,
   cookieHeaders,
-  signFolderCookies,
+  signDerivativeCookies,
   signObjectUrl,
 } from '../shared/signing.js';
 import { invalidate } from '../shared/invalidate.js';
@@ -142,8 +141,6 @@ async function presentPhoto(photo: Photo, opts: Presentation) {
     photoId: photo.photoId,
     basename: photo.basename,
     takenAt: photo.takenAt,
-    width: photo.width,
-    height: photo.height,
     ready: Boolean(photo.derivedAt),
     hasRaw: opts.allowRaw && photo.hasRaw,
     canDownload: opts.allowDownload && Boolean(photo.originalExt),
@@ -251,13 +248,13 @@ async function createUploads(event: APIGatewayProxyEventV2) {
       uploads.push({
         filename: file.filename,
         photoId,
+        // No ContentType on the signed PUT: it would become part of the
+        // signature, and the browser sends `file.type`, which is empty for a
+        // .RAF — a mismatch S3 refuses. Nothing reads content-type back off
+        // `orig/` or `raw/` anyway; downloads name themselves via `<a download>`.
         url: await presignS3(
           s3,
-          new PutObjectCommand({
-            Bucket: BUCKET,
-            Key: key,
-            ContentType: contentTypeFor(ext),
-          }),
+          new PutObjectCommand({ Bucket: BUCKET, Key: key }),
           { expiresIn: UPLOAD_TTL },
         ),
       });
@@ -310,7 +307,7 @@ const photoObjectKeys = (photo: Photo) => [
  * is not the leak — and `f/<photo>/*` costs one path against CloudFront's
  * 1000-a-month free allowance where the keys under it would cost one each.
  */
-async function deleteObjects(keys: string[], what: string) {
+async function deleteObjects(keys: string[]) {
   const res = await s3.send(
     new DeleteObjectsCommand({
       Bucket: BUCKET,
@@ -318,7 +315,7 @@ async function deleteObjects(keys: string[], what: string) {
     }),
   );
   if (res.Errors?.length) {
-    throw new HttpError(500, `Could not remove ${res.Errors.length} ${what}; retry`);
+    throw new HttpError(500, `Could not remove ${res.Errors.length} object(s); retry`);
   }
 
   const dirs = new Set(
@@ -353,7 +350,7 @@ async function destroyPhoto(photoId: string) {
   );
   const wasCover = folders.some((f) => f?.coverPhotoId === photoId);
 
-  await deleteObjects(photoObjectKeys(photo), 'object(s)');
+  await deleteObjects(photoObjectKeys(photo));
   await db.deletePhoto(photoId);
   if (wasCover) await invalidatePreviews();
 
@@ -520,7 +517,6 @@ async function downloadPayload(photo: Photo, wantRaw: boolean) {
     // The signed URL is a bare object URL, so the name the browser saves under
     // comes from here rather than from a Content-Disposition override.
     filename: `${photo.basename}.${ext}`,
-    expiresIn: DOWNLOAD_TTL,
   };
 }
 
@@ -639,12 +635,7 @@ const routes: Array<{
     pattern: /^\/api\/session$/,
     admin: true,
     handle: async () => {
-      // The admin sees every folder, so the policy covers the whole prefix rather
-      // than a single folder's.
-      const cookies = await signFolderCookies(
-        `https://${DOMAIN}/${PREFIX_DERIVED}*`,
-        SESSION_TTL,
-      );
+      const cookies = await signDerivativeCookies(SESSION_TTL);
       return json(200, { ok: true }, cookieHeaders(cookies, SESSION_TTL));
     },
   },

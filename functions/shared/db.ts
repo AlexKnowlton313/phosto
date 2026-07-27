@@ -62,34 +62,19 @@ const hasPatch = (patch: object) =>
 
 // --------------------------------------------------------------------- folders
 
-/**
- * `ifAbsent` makes this a create rather than an overwrite, and swallows the
- * refusal. A folder with a fixed id is created lazily by whichever request needs
- * it first, and a plain Put would let a stale read from a second request clobber
- * the live item back to photoCount 0 — losing that race is the correct outcome,
- * not an error.
- */
-export async function putFolder(
-  folder: Folder,
-  { ifAbsent = false } = {},
-): Promise<void> {
-  try {
-    await ddb.send(
-      new PutCommand({
-        TableName: TABLE,
-        Item: {
-          pk: folderPk(folder.folderId),
-          sk: 'META',
-          gsi1pk: 'ROOT',
-          gsi1sk: `${folder.createdAt}#${folder.folderId}`,
-          ...folder,
-        },
-        ...(ifAbsent ? { ConditionExpression: 'attribute_not_exists(pk)' } : {}),
-      }),
-    );
-  } catch (err) {
-    if (!ifAbsent || (err as Error).name !== 'ConditionalCheckFailedException') throw err;
-  }
+export async function putFolder(folder: Folder): Promise<void> {
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE,
+      Item: {
+        pk: folderPk(folder.folderId),
+        sk: 'META',
+        gsi1pk: 'ROOT',
+        gsi1sk: `${folder.createdAt}#${folder.folderId}`,
+        ...folder,
+      },
+    }),
+  );
 }
 
 export async function getFolder(folderId: string): Promise<Folder | null> {
@@ -97,19 +82,6 @@ export async function getFolder(folderId: string): Promise<Folder | null> {
     new GetCommand({ TableName: TABLE, Key: { pk: folderPk(folderId), sk: 'META' } }),
   );
   return (res.Item as Folder) ?? null;
-}
-
-export async function listFolders(): Promise<Folder[]> {
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      IndexName: 'gsi1',
-      KeyConditionExpression: 'gsi1pk = :root',
-      ExpressionAttributeValues: { ':root': 'ROOT' },
-      ScanIndexForward: false,
-    }),
-  );
-  return (res.Items ?? []) as Folder[];
 }
 
 export async function updateFolder(
@@ -129,24 +101,6 @@ export async function updateFolder(
 }
 
 /**
- * Its own function because `setExpression` can only SET: an `undefined` in a
- * patch is skipped, so there is no way to spell "drop this field" through
- * `updateFolder`. Hiding the frame a roll uses as its cover needs exactly that,
- * or the roll card goes on advertising the frame just taken out of circulation.
- */
-export async function clearCover(folderId: string): Promise<void> {
-  await ddb.send(
-    new UpdateCommand({
-      TableName: TABLE,
-      Key: { pk: folderPk(folderId), sk: 'META' },
-      UpdateExpression: 'REMOVE coverPhotoId SET updatedAt = :now',
-      ExpressionAttributeValues: { ':now': new Date().toISOString() },
-      ConditionExpression: 'attribute_exists(pk)',
-    }),
-  );
-}
-
-/**
  * The photoCount bump as a bare command shape, so `attachPhoto` and `detachPhoto`
  * can put the same guarded expression inside their transactions rather than
  * restating it. The condition is what makes a membership change fail cleanly when
@@ -159,10 +113,6 @@ const photoCountUpdate = (folderId: string, delta: number, extra = '') => ({
   ExpressionAttributeValues: { ':zero': 0, ':delta': delta },
   ConditionExpression: 'attribute_exists(pk)',
 });
-
-export async function bumpPhotoCount(folderId: string, delta: number): Promise<void> {
-  await ddb.send(new UpdateCommand(photoCountUpdate(folderId, delta)));
-}
 
 /**
  * Takes the folder's shares and its memberships with it — never a photograph.
@@ -258,6 +208,9 @@ async function queryGsi1(pk: string, skPrefix?: string): Promise<unknown[]> {
 
 /** Every photo, in no folder in particular — what "All photos" renders. */
 export const listLibrary = () => queryGsi1(LIBRARY_PK) as Promise<Photo[]>;
+
+/** Every roll, newest first. `ROOT` is the partition every folder hangs off. */
+export const listFolders = () => queryGsi1('ROOT') as Promise<Folder[]>;
 
 /** The memberships of one folder. Ordered, but they carry no photo detail. */
 export const listFolderMemberships = (folderId: string) =>
@@ -513,18 +466,9 @@ export async function getShare(tokenHash: string): Promise<Share | null> {
   return share;
 }
 
-export async function listSharesForFolder(folderId: string): Promise<Share[]> {
-  const res = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      IndexName: 'gsi1',
-      KeyConditionExpression: 'gsi1pk = :pk AND begins_with(gsi1sk, :prefix)',
-      ExpressionAttributeValues: { ':pk': folderPk(folderId), ':prefix': 'SHARE#' },
-      ScanIndexForward: false,
-    }),
-  );
-  return (res.Items ?? []) as Share[];
-}
+/** One folder's shares — the other half of its overloaded gsi1 partition. */
+export const listSharesForFolder = (folderId: string) =>
+  queryGsi1(folderPk(folderId), 'SHARE#') as Promise<Share[]>;
 
 /**
  * Bumped on every `openShare`, which is a page load and not a person: a reload

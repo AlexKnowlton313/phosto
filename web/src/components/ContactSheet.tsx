@@ -154,6 +154,29 @@ export function ContactSheet({ photos, selected, onOpen, onToggle }: Props) {
 }
 
 /**
+ * Placeholder sheet while the photos are in flight. Cells surface one after the
+ * other the way prints come up in a tray, and they carry frame numbers, so the
+ * wait reads as a contact sheet developing rather than a generic shimmer. The
+ * count is a guess — twelve fills a laptop viewport without pushing a long scroll
+ * onto a phone, and the real sheet replaces it whole.
+ */
+export function SkeletonSheet() {
+  return (
+    <div className="sheet" aria-busy="true" aria-label="Developing frames">
+      {Array.from({ length: 12 }, (_, index) => (
+        <div
+          key={index}
+          className="frame frame-skeleton"
+          style={{ animationDelay: `${index * 90}ms` }}
+        >
+          <span className="frame-no">{String(index + 1).padStart(2, '0')}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
  * The film edge-marking header. Everything on the data line is read off the
  * photos themselves, so it describes the actual roll rather than restating the
  * folder name in smaller type.
@@ -161,12 +184,10 @@ export function ContactSheet({ photos, selected, onOpen, onToggle }: Props) {
 export function EdgeHeader({
   name,
   photos,
-  extra,
   onRename,
 }: {
   name: string;
   photos: PhotoView[];
-  extra?: string;
   /** Admin only, and absent on the All photos view, which is not a roll —
    * same pattern as Lightbox's onDelete. A share viewer never sees it. */
   onRename?: () => void;
@@ -211,7 +232,6 @@ export function EdgeHeader({
         {range && <span>{range}</span>}
         {cameras.length === 1 && <span>{cameras[0]}</span>}
         {rawCount > 0 && <span>{rawCount} raw</span>}
-        {extra && <span>{extra}</span>}
       </div>
     </header>
   );

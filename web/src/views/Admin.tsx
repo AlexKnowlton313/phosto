@@ -15,6 +15,7 @@ import {
   ContactSheet,
   EdgeHeader,
   selectable,
+  SkeletonSheet,
   useSelection,
 } from '../components/ContactSheet';
 import { Lightbox } from '../components/Lightbox';
@@ -772,9 +773,7 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       {error && <p className="error" style={{ padding: '16px 24px' }}>{error}</p>}
 
       {!shown ? (
-        <div className="empty">
-          <p className="note">Loading…</p>
-        </div>
+        <SkeletonSheet />
       ) : shown.length === 0 ? (
         <div className="empty">
           <h2>{isLibrary ? 'No photos yet' : 'Empty roll'}</h2>

@@ -1,5 +1,6 @@
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { getSignedCookies, getSignedUrl } from '@aws-sdk/cloudfront-signer';
+import { PREFIX_DERIVED } from './keys.js';
 
 const ssm = new SSMClient({});
 const KEY_PAIR_ID = process.env.KEY_PAIR_ID!;
@@ -36,13 +37,14 @@ function loadPrivateKey(): Promise<string> {
 type SignedCookies = ReturnType<typeof getSignedCookies>;
 
 /**
- * Signs a wildcard resource so one set of cookies covers every derivative in a
- * folder. Cookies are scoped with Path=/ because CloudFront matches the policy's
- * Resource, not the cookie path — but the policy itself is what grants access, and
- * it names exactly one folder prefix.
+ * One set of cookies covering every derivative, issued only to the admin.
+ *
+ * The resource is `f/*` and nothing else: no folder id appears in a key, so
+ * there is no narrower wildcard to sign — a share gets per-object URLs instead.
+ * Cookies are scoped with Path=/ because CloudFront matches the policy's
+ * Resource, not the cookie path; the policy is what grants access.
  */
-export async function signFolderCookies(
-  resource: string,
+export async function signDerivativeCookies(
   ttlSeconds: number,
 ): Promise<SignedCookies> {
   const privateKey = await loadPrivateKey();
@@ -51,7 +53,7 @@ export async function signFolderCookies(
   const policy = JSON.stringify({
     Statement: [
       {
-        Resource: resource,
+        Resource: `https://${DOMAIN}/${PREFIX_DERIVED}*`,
         Condition: { DateLessThan: { 'AWS:EpochTime': expires } },
       },
     ],

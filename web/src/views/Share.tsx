@@ -4,6 +4,7 @@ import {
   ContactSheet,
   EdgeHeader,
   selectable,
+  SkeletonSheet,
   useSelection,
 } from '../components/ContactSheet';
 import { Lightbox } from '../components/Lightbox';
@@ -38,13 +39,7 @@ export function Share({ token }: { token: string }) {
     );
   }
 
-  if (!data) {
-    return (
-      <div className="empty">
-        <p className="note">Loading…</p>
-      </div>
-    );
-  }
+  if (!data) return <SkeletonSheet />;
 
   const download = async (photoId: string) => {
     saveAs(await shareApi.download(token, photoId));

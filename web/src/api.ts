@@ -1,5 +1,4 @@
 export interface AppConfig {
-  region: string;
   userPoolId: string;
   userPoolClientId: string;
   domain: string;
@@ -9,8 +8,6 @@ export interface PhotoView {
   photoId: string;
   basename: string;
   takenAt: string;
-  width?: number;
-  height?: number;
   ready: boolean;
   hasRaw: boolean;
   canDownload: boolean;
@@ -84,15 +81,6 @@ export async function loadConfig(): Promise<AppConfig> {
   return cachedConfig;
 }
 
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -113,7 +101,7 @@ async function request<T>(
 
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new ApiError(res.status, (payload as { error?: string }).error ?? res.statusText);
+    throw new Error((payload as { error?: string }).error ?? res.statusText);
   }
   return payload as T;
 }
@@ -248,7 +236,6 @@ export interface MembershipResult {
 export interface DownloadTarget {
   url: string;
   filename: string;
-  expiresIn: number;
 }
 
 /**

@@ -31,20 +31,18 @@ function loadDistributionId(): Promise<string> {
 /**
  * Drops paths from the edge cache.
  *
- * Derivatives are written `immutable, max-age=1y`, so moving or deleting the
- * object at the origin does not stop a POP serving the copy it already has. That
- * is only a tidiness problem for a delete, but for hiding it is the whole
- * feature: a viewer who reopens the share gets a fresh cookie that still covers
- * the old URL, and the cached bytes are returned without S3 being consulted.
+ * Derivatives are written `immutable, max-age=1y`, so deleting the object at the
+ * origin does not stop a POP serving the copy it already has to anyone holding a
+ * still-valid signed URL for it. Same for a share preview, which is served with
+ * no credential at all.
  *
- * Best-effort by design. The caller has already moved the bytes, which is the
+ * Best-effort by design. The caller has already removed the bytes, which is the
  * durable half of the change, and failing the request afterwards would leave the
  * operator with an error on an operation that mostly succeeded. Failures are
  * logged loudly instead.
  *
  * What this cannot reach is the viewer's own browser cache — `immutable` means
- * their tab may never revalidate. Hiding revokes the link for everyone they
- * forwarded it to, not for the person who already had it open.
+ * their tab may never revalidate.
  */
 export async function invalidate(paths: string[]): Promise<void> {
   if (!paths.length) return;

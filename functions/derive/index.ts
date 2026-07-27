@@ -49,12 +49,7 @@ async function loadDecodableBytes(
   return null;
 }
 
-async function writeDerivatives(
-  pipeline: sharp.Sharp,
-  photoId: string,
-): Promise<{ width?: number; height?: number }> {
-  const metadata = await pipeline.metadata();
-
+async function writeDerivatives(pipeline: sharp.Sharp, photoId: string): Promise<void> {
   const entries = Object.entries(DERIVATIVE_SIZES) as [DerivativeName, number][];
 
   await Promise.all(
@@ -79,13 +74,6 @@ async function writeDerivatives(
       );
     }),
   );
-
-  // Report post-rotation dimensions so the grid can reserve the right aspect box.
-  const rotated = metadata.orientation && metadata.orientation >= 5;
-  return {
-    width: rotated ? metadata.height : metadata.width,
-    height: rotated ? metadata.width : metadata.height,
-  };
 }
 
 const deleteDerivatives = (photoId: string) =>
@@ -142,7 +130,7 @@ async function processRecord(record: S3EventRecord): Promise<void> {
     .catch(() => undefined);
 
   const exif = readExif(metadata?.exif);
-  const { width, height } = await writeDerivatives(pipeline, photoId);
+  await writeDerivatives(pipeline, photoId);
 
   // Decoding a HEIC or a RAF takes seconds while a DELETE takes milliseconds, so
   // the frame can be destroyed while this is still working on it. The sweep that
@@ -161,8 +149,6 @@ async function processRecord(record: S3EventRecord): Promise<void> {
 
   const patch: Partial<Photo> = {
     ...exif,
-    width,
-    height,
     derivedAt: new Date().toISOString(),
     [isRaw ? 'rawBytes' : 'originalBytes']: record.s3.object.size,
   };
@@ -176,8 +162,6 @@ async function processRecord(record: S3EventRecord): Promise<void> {
   console.log('Derivatives written', {
     key,
     photoId,
-    width,
-    height,
     source: isRaw ? 'raw-embedded-preview' : 'original',
   });
 }

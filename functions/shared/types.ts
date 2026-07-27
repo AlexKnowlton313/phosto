@@ -21,8 +21,6 @@ export interface Photo {
   basename: string;
   takenAt: string;
   uploadedAt: string;
-  width?: number;
-  height?: number;
   /** Extension of the display original, e.g. "jpg". Absent for raw-only photos. */
   originalExt?: string;
   originalBytes?: number;
