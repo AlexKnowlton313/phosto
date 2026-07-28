@@ -580,6 +580,10 @@ async function openShare(token: string) {
     .filter((p) => p.derivedAt)
     .sort(byTakenAtDesc);
 
+  // Frame 01 is the first exposure when the roll says so. Reversing the sorted
+  // list is the ascending sort, ties included, for one line.
+  if (folder.sortOrder === 'oldest') photos.reverse();
+
   // No cookie. A photo sits under no folder prefix, so there is no wildcard that
   // names this roll and nothing else — each derivative is granted on its own.
   // The trade: detaching a frame revokes nothing already issued. Those URLs stop
@@ -803,6 +807,14 @@ const routes: Array<{
       // `shareCover` streams the cover with no cookie at all, so a frame that is
       // not in this roll would be published at 2400px to anyone holding its share
       // URL — through a route that only ever looks at the folder record.
+      // Written straight into the record, so it cannot be an arbitrary string.
+      if (
+        patch.sortOrder !== undefined &&
+        patch.sortOrder !== 'newest' &&
+        patch.sortOrder !== 'oldest'
+      ) {
+        throw new HttpError(400, 'sortOrder must be "newest" or "oldest"');
+      }
       if (patch.coverPhotoId !== undefined) {
         const inFolder = (await db.listPhotoMemberships(patch.coverPhotoId)).some(
           (m) => m.folderId === folderId,
@@ -812,6 +824,7 @@ const routes: Array<{
       await db.updateFolder(folderId, {
         name: patch.name?.trim(),
         coverPhotoId: patch.coverPhotoId,
+        sortOrder: patch.sortOrder,
       });
       return json(200, await db.getFolder(folderId));
     },

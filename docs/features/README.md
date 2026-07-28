@@ -5,19 +5,19 @@ the code as it stands: what is missing, why it matters given this architecture,
 the smallest design that works, and what it costs.
 
 Ranked by value against effort — the top three are the ones worth doing first.
-[Range select](range-select.md) has since shipped and is out of the table.
+[Range select](range-select.md) and [roll sort order](roll-sort-order.md) have
+since shipped and are out of the table.
 
 | # | Feature | For | Effort | Why |
 |---|---|---|---|---|
 | 5 | [Staying signed in](session-renewal.md) | admin | small | Token and image cookie both expire at 8h and neither renews. Shows up as broken images and a 401 line; recovery is a reload you have to guess at. |
 | 6 | [Trash](trash.md) | admin | medium | The one irreversible action in an app otherwise built so mistakes cannot lose a photograph. ~$0.05 to hold a 100-frame delete for 30 days. |
-| 7 | [Roll sort order](roll-sort-order.md) | both | tiny | Frame 01 is currently the *last* exposure — backwards for the one metaphor the whole design runs on. |
 | 8 | [A line of text on a share](share-note.md) | share viewer | tiny | Nowhere to say what a roll is, and `og:description` is missing entirely, so every link preview has an empty description line. |
 | 9 | [Viewer picks](share-picks.md) | share viewer | small, no server | Marking frames on a contact sheet is what a contact sheet is *for*. localStorage + clipboard, no API surface. |
 | 10 | [Bulk download: progress, don't stop at the first failure](share-bulk-download.md) | both | small | 40 frames is 11 seconds of a disabled button, and one transient failure abandons the rest with no record of what landed. |
 
-Several share an edit. 7 and 8 are both one key added to `db.updateFolder`'s
-whitelist. 10 is the same loop in `Share.tsx` and `SelectionBar.tsx`, which is an
+Several share an edit. 8 is one key added to `db.updateFolder`'s whitelist —
+`sortOrder` went in the same way. 10 is the same loop in `Share.tsx` and `SelectionBar.tsx`, which is an
 argument for lifting it into `api.ts` once.
 
 ## Considered and not proposed

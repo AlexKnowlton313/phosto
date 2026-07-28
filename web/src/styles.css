@@ -236,6 +236,38 @@ button {
   color: var(--safelight);
 }
 
+/* Roll order. The only toolbar control that reports a state rather than firing
+   an action, so it carries a mark the others don't: one arrow, in the frame-
+   number mono, rotating when the sheet turns over. No accent colour — amber and
+   safelight each already mean one thing. */
+.btn-order {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.order-arrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--faint);
+  transition: transform 180ms ease, color 120ms ease;
+}
+
+.btn-order[data-order='oldest'] .order-arrow {
+  transform: rotate(180deg);
+}
+
+.btn-order:hover:not(:disabled) .order-arrow {
+  color: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .order-arrow {
+    transition: color 120ms ease;
+  }
+}
+
 /* Download RAW — film-base amber, the one place negatives are named. */
 .btn-negatives {
   border-color: var(--amber-dim);

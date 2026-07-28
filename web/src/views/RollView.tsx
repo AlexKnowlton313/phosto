@@ -136,11 +136,15 @@ export function RollView({
   }, [folderId]);
 
   // What is actually on the sheet. Frame numbers run over this, which is
-  // correct: a contact sheet numbers what is printed on it.
-  const visible = useMemo(
-    () => (isLibrary && photos ? filterPhotos(photos, filters, memberships) : photos),
-    [isLibrary, photos, filters, memberships],
-  );
+  // correct: a contact sheet numbers what is printed on it — so the roll's
+  // order is applied here, and All photos stays newest-first: it is an inbox,
+  // and it has no folder record to hold the field.
+  const visible = useMemo(() => {
+    if (!photos) return photos;
+    if (isLibrary) return filterPhotos(photos, filters, memberships);
+    // The API returns newest-first; reversing is the ascending sort.
+    return folder.sortOrder === 'oldest' ? [...photos].reverse() : photos;
+  }, [isLibrary, photos, filters, memberships, folder.sortOrder]);
 
   // Over `visible`, not `photos`: select-all means what is printed on the sheet,
   // the same list the frame numbers and the lightbox run over.
@@ -195,6 +199,13 @@ export function RollView({
       await refresh();
     }
   };
+
+  const flipOrder = async () =>
+    onFolderUpdated(
+      await api.updateFolder(folderId, {
+        sortOrder: folder.sortOrder === 'oldest' ? 'newest' : 'oldest',
+      }),
+    );
 
   const setCover = async (photo: PhotoView) => {
     onFolderUpdated(await api.updateFolder(folderId, { coverPhotoId: photo.photoId }));
@@ -273,6 +284,26 @@ export function RollView({
         )}
 
         <div className="spacer" />
+
+        {/* A roll is a sequence; All photos is an inbox and has no record to
+            hold the field. Label says the order it is in, not the one it would
+            switch to. */}
+        {!isLibrary && (
+          <button
+            type="button"
+            className="btn btn-order"
+            data-order={folder.sortOrder ?? 'newest'}
+            disabled={batching}
+            onClick={flipOrder}
+          >
+            {/* One glyph, rotated by CSS — the flip *is* the icon, and it points
+                the way the sheet runs. */}
+            <span className="order-arrow" aria-hidden="true">
+              ↓
+            </span>
+            {folder.sortOrder === 'oldest' ? 'Oldest first' : 'Newest first'}
+          </button>
+        )}
 
         {!isLibrary && (
           <button

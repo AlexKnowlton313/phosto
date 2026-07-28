@@ -23,15 +23,20 @@ export function useSelection() {
    * on an ordinary click.
    */
   const toggle = useCallback((photoId: string, order: string[] = []) => {
-    const from = anchor.current ? order.indexOf(anchor.current) : -1;
     const to = order.indexOf(photoId);
+    const last = anchor.current;
     anchor.current = photoId;
 
     setSelected((prev) => {
       const next = new Set(prev);
-      // A range only ever adds. The anchor is wherever the last click landed, so
-      // a range that could also deselect would make one gesture mean two things
-      // depending on a state the sheet does not show.
+      // Range from the last frame toggled — but only while it is still selected.
+      // Deselecting it leaves an end point the sheet no longer shows, and ranging
+      // from it would put the frame just unselected straight back in; the nearest
+      // selected frame is the one the user can actually see.
+      const from =
+        to < 0 ? -1 : last && prev.has(last) ? order.indexOf(last) : nearest(order, to, prev);
+      // A range only ever adds: a range that could also deselect would make one
+      // gesture mean two things depending on a state the sheet does not show.
       if (from >= 0 && to >= 0) {
         for (const id of order.slice(Math.min(from, to), Math.max(from, to) + 1)) {
           next.add(id);
@@ -74,6 +79,19 @@ export function useSelection() {
   }, [clear]);
 
   return { selected, setSelected, toggle, clear, retain };
+}
+
+/**
+ * Index of the selected frame closest to `to`, or -1 if nothing is selected.
+ * Walks outward a step at a time and prefers the earlier frame on a tie, so a
+ * shift-click between two selected frames ranges backwards, the way a list does.
+ */
+function nearest(order: string[], to: number, selected: Set<string>) {
+  for (let d = 1; d < order.length; d++) {
+    if (to - d >= 0 && selected.has(order[to - d])) return to - d;
+    if (to + d < order.length && selected.has(order[to + d])) return to + d;
+  }
+  return -1;
 }
 
 /**

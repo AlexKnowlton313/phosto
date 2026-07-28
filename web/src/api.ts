@@ -34,6 +34,12 @@ export interface FolderView {
   photoCount: number;
   /** Derivative key is `f/<coverPhotoId>/thumb.webp` — no API field needed. */
   coverPhotoId?: string;
+  /**
+   * Which end of the roll frame 01 is; absent means 'newest'. The share view gets
+   * its photos already in this order — the admin applies it to the newest-first
+   * list the API returns, so reading a roll costs no extra folder lookup.
+   */
+  sortOrder?: 'newest' | 'oldest';
 }
 
 /**

@@ -86,7 +86,7 @@ export async function getFolder(folderId: string): Promise<Folder | null> {
 
 export async function updateFolder(
   folderId: string,
-  patch: Partial<Pick<Folder, 'name' | 'coverPhotoId'>>,
+  patch: Partial<Pick<Folder, 'name' | 'coverPhotoId' | 'sortOrder'>>,
 ): Promise<void> {
   if (!hasPatch(patch)) return;
 

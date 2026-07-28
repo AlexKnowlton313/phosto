@@ -5,6 +5,12 @@ export interface Folder {
   updatedAt: string;
   photoCount: number;
   coverPhotoId?: string;
+  /**
+   * Which end of the roll frame 01 is. Absent means 'newest', which is what every
+   * roll created before this field did. A property of the sort callers already do
+   * after reading — no key moves, and membership sort keys are untouched.
+   */
+  sortOrder?: 'newest' | 'oldest';
 }
 
 /**
