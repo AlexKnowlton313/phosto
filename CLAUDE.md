@@ -35,11 +35,10 @@ looking for one, and don't imply coverage that doesn't exist. The verification l
 is `npm run typecheck`, then `npm run diff` to read the CloudFormation change, then
 the access-control canary described below.
 
-`npx react-doctor` lints `web/` and currently scores 100. `doctor.config.mjs`
-turns off exactly one rule, `async-await-in-loop`, and says why in the file: both
-sequential loops here are sequential on purpose — one because concurrent deletes
-contend on a roll's `photoCount` in DynamoDB, the other because browsers drop a
-burst of programmatic downloads. Read that comment before adding a second entry.
+`npx react-doctor` lints `web/` and currently scores 100. It flags
+`async-await-in-loop`; both sequential loops here are sequential on purpose — one
+because concurrent deletes contend on a roll's `photoCount` in DynamoDB, the other
+because browsers drop a burst of programmatic downloads.
 
 `functions/layers/*/nodejs/` is gitignored and CDK reads it with `Code.fromAsset`,
 so a bare `npx cdk synth`/`deploy` on a fresh clone fails until `npm run
@@ -154,6 +153,32 @@ Routes that take a photo do **not** take a folder: a photo belongs to no folder,
 `/api/photos/<id>` is the whole path. `/api/folders/<id>/photos` is the membership
 route — `PUT` attaches, `DELETE` detaches, and neither destroys anything.
 `DELETE /api/photos/<id>` is the only route in the API that can lose a photograph.
+
+There are **two membership-reading routes and they fan out on opposite axes.**
+`POST /api/photos/memberships` takes a selection of photo ids and queries once per
+*photo* — it feeds the "3 already in this roll" note in the roll picker, and it is
+the wrong shape for the whole library (835 queries). `GET /api/memberships` queries
+once per *folder* and returns every membership keyed by photo id, which is what All
+photos filters *unfiled* on and what tells the lightbox which rolls a frame is in.
+Neither needs an IAM change; both are DynamoDB reads the API already holds.
+
+Membership cannot ride along on the library payload, and this is worth knowing
+before someone tries: membership hangs off the **photo's** partition under a
+`FOLDER#` sort key, while `listLibrary` reads the `LIB` gsi1 partition, which holds
+META items only. The denormalised alternative — a `folders` set on the photo record,
+maintained inside the attach/detach transactions — is noted as the upgrade path in
+`allMemberships`. It is not free: `deleteFolder` drops memberships with bare
+`DeleteCommand`s *outside* those transactions, so its cascade would have to maintain
+the set too, and 835 existing photos would need a backfill.
+
+`POST /api/photos/<id>/develop` re-runs the pipeline for one frame: it copies the
+photo's `orig/` key (or `raw/`, when there is no original) onto itself with
+`MetadataDirective: 'REPLACE'`, which re-fires the S3 notification. That is the
+operational note below as a route, so it needs no IAM change — the API already
+holds `bucket.grantReadWrite`. It writes nothing to the record: `derivedAt`
+belongs to derive. 202, not 200; the derivatives land seconds later and the UI
+polls. It cannot fix a RAW-only frame in a format with no preview extractor —
+`createUploads` names those in `noPreview` at upload time instead.
 
 `functions/` is `module: NodeNext`, so relative imports must carry a `.js`
 extension even though the sources are `.ts` — `import * as db from
@@ -332,6 +357,15 @@ work on the share view.
 Test the lightbox at full derivative size (400 / 2400). A downscaled stand-in is
 what hid the `max-height` bug the landmines list names.
 
+**`RollView`'s pending-frame poll has a ceiling and must keep one** —
+`usePendingPoll`, `POLL_ROUNDS` × `POLL_MS`, two minutes. It re-reads the whole library each round,
+so a frame that can never develop turned an open tab into ~900 `listLibrary`
+calls an hour: at 835 frames that is roughly the entire gallery's monthly cost
+per day, and most of the Lambda free tier the rest of the app shares. When it
+lapses the sheet says so and offers *Check again* rather than a spinner that
+lies, and `ContactSheet` flips the cell from DEVELOPING to STUCK at the same
+two minutes, off `uploadedAt`.
+
 `/s/<token>` is the only client-side route. `App.tsx` matches it before touching
 Cognito, so a share viewer never loads the auth path; everything else is the admin
 UI behind sign-in.
@@ -351,6 +385,24 @@ knows, so `Admin.tsx` synthesises a `FolderView` for it and `isLibrary` gates
 everything a real roll has and it doesn't — rename, share, cover, delete roll, and
 Remove from roll. *Add to roll* works from both. Upload is on neither: it lives on
 the roll index, above both of them, because a frame arrives in the library.
+
+**The filter row is All photos only** (`SheetFilters`, predicates in
+`components/filters.ts`). Filename, camera, month, *has RAW* and *undeveloped* are
+pure client-side passes over `photos` — the library payload already carries every
+field, so none of them costs a byte. *In no roll* is the one exception and the
+reason `GET /api/memberships` exists; its checkbox stays **disabled until the
+memberships land**, because with an absent map every frame reads as unfiled and the
+whole library would flash up as the answer.
+
+The filtered list is `visible`, and it is what `EdgeHeader`, `ContactSheet` and
+`Lightbox` all receive — so frame numbers run one-based over what is printed on the
+sheet, which is how a contact sheet works. `SelectionBar` gets the **unfiltered**
+`photos` instead: a selection survives a filter change, and the bar has to resolve
+a selected id that is currently hidden. Filters live in `RollView` state and die
+with it, since `RollView` is mounted per roll.
+
+An empty sheet has two meanings and `EmptySheet` keeps them apart: filters that
+exclude everything must not render as "No photos yet" over 835 frames.
 
 **Destroying a photograph is an All photos action only.** A roll offers "Remove
 from roll"; All photos offers "Delete photos" — never both, in the selection bar

@@ -5,5 +5,6 @@
   "hostedZoneName": "example.com",
   "bucketName": "example-phosto",
   "signingKeyParameterName": "/phosto/cloudfront/private-key",
-  "signingPublicKeyPath": "keys/cloudfront-public.pem"
+  "signingPublicKeyPath": "keys/cloudfront-public.pem",
+  "alarmEmail": "you@example.com"
 }

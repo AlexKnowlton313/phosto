@@ -7,11 +7,11 @@ import {
 import type { S3Event, S3EventRecord } from 'aws-lambda';
 import sharp from 'sharp';
 import * as db from '../shared/db.js';
-import { derivedKey, parseSourceKey } from '../shared/keys.js';
+import { derivedKey, isRaf, parseSourceKey } from '../shared/keys.js';
 import { DERIVATIVE_SIZES, type DerivativeName, type Photo } from '../shared/types.js';
 import { openImage } from './decode.js';
 import { readExif } from './exif.js';
-import { extractRafPreview, isRaf } from './raf.js';
+import { extractRafPreview } from './raf.js';
 
 const s3 = new S3Client({});
 const BUCKET = process.env.BUCKET_NAME!;

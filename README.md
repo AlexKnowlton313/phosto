@@ -76,6 +76,9 @@ files with a matching basename (`XT300024.JPG` + `.RAF`) become one frame. Uploa
 frames land in the library and in no roll; file them from **All photos** with *Add
 to roll*.
 
+**All photos** filters by filename, camera, month, RAW and — the one that matters
+after a card dump — **in no roll**, which is how you find what is still unfiled.
+
 ## Development
 
 ```bash

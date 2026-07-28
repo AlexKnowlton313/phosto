@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
+  CopyObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -17,6 +18,7 @@ import {
   derivedKey,
   extensionOf,
   isImageExt,
+  isRaf,
   isRawExt,
   originalKey,
   PREFIX_DERIVED,
@@ -141,6 +143,10 @@ async function presentPhoto(photo: Photo, opts: Presentation) {
     photoId: photo.photoId,
     basename: photo.basename,
     takenAt: photo.takenAt,
+    // How long a frame has been waiting, which is the only way to tell "still
+    // developing" from "never will". Not a capability like the keys below, so it
+    // is not behind a permission — and a share only ever lists developed frames.
+    uploadedAt: photo.uploadedAt,
     ready: Boolean(photo.derivedAt),
     hasRaw: opts.allowRaw && photo.hasRaw,
     canDownload: opts.allowDownload && Boolean(photo.originalExt),
@@ -214,12 +220,20 @@ async function createUploads(event: APIGatewayProxyEventV2) {
 
   const now = new Date().toISOString();
   const uploads: Array<{ filename: string; url: string; photoId: string }> = [];
+  // Frames that are knowably preview-less before a byte moves: a RAW with no
+  // JPEG sibling, in a format derive has no extractor for. Reported so the UI can
+  // say so at upload time instead of leaving them at DEVELOPING forever.
+  const noPreview: string[] = [];
   let created = 0;
 
   for (const [base, groupFiles] of groups) {
     const image = groupFiles.find((f) => isImageExt(extensionOf(f.filename)));
     const raw = groupFiles.find((f) => isRawExt(extensionOf(f.filename)));
     const photoId = randomUUID();
+
+    if (raw && !image && !isRaf(extensionOf(raw.filename))) {
+      noPreview.push(raw.filename);
+    }
 
     const takenAt = groupFiles.find((f) => f.lastModified)?.lastModified;
 
@@ -262,7 +276,47 @@ async function createUploads(event: APIGatewayProxyEventV2) {
   }
 
   console.log('Uploads issued', { photos: created, objects: uploads.length });
-  return json(200, { uploads });
+  return json(200, { uploads, noPreview });
+}
+
+/**
+ * Runs derive again for one photo, by copying its source object onto itself with
+ * `MetadataDirective: 'REPLACE'` — the operational note's `aws s3 cp` as a route.
+ * That re-fires the `orig/`/`raw/` notification; nothing here writes to the
+ * record, because `derivedAt` belongs to derive.
+ *
+ * `bucket.grantReadWrite(apiFn)` already covers the copy, so there is no IAM
+ * change. A source that has aged into Glacier Instant Retrieval costs $0.03/GB to
+ * read and comes back as STANDARD — $0.0009 for a 29MB RAF, and the lifecycle
+ * rule puts it back within 30 days. Not worth a HeadObject to defend against.
+ */
+async function redevelop(photoId: string) {
+  const photo = await db.getPhoto(photoId);
+  if (!photo) throw new HttpError(404, 'Photo not found');
+
+  // The same source derive would pick: the JPEG whenever there is one, and the
+  // RAW only for a RAW-only frame — derive skips the RAW pass otherwise.
+  const key = photo.originalExt
+    ? originalKey(photoId, photo.originalExt)
+    : photo.rawExt
+      ? rawKey(photoId, photo.rawExt)
+      : null;
+  if (!key) throw new HttpError(409, 'This photo has no source object');
+
+  await s3.send(
+    new CopyObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      CopySource: `${BUCKET}/${key}`,
+      // A copy onto itself is refused without this — and it is also what makes
+      // S3 emit a fresh ObjectCreated event.
+      MetadataDirective: 'REPLACE',
+    }),
+  );
+
+  console.log('Re-derive triggered', { photoId, key });
+  // Accepted, not done: derive runs on the notification, seconds later.
+  return json(202, { ok: true });
 }
 
 /**
@@ -430,6 +484,42 @@ async function photoMemberships(event: APIGatewayProxyEventV2) {
   }
 
   return json(200, { counts });
+}
+
+/**
+ * Which rolls every photo is in, keyed by photo id. A frame in no roll is simply
+ * absent, and that absence is the only way to ask the question the data model
+ * creates: which frames are unfiled.
+ *
+ * The library payload cannot carry this. Membership hangs off the *photo's*
+ * partition under a `FOLDER#` sort key, while `listLibrary` reads the `LIB` gsi1
+ * partition, which holds META items only.
+ *
+ * Fanned out over folders, not photos — N queries for N rolls. `photoMemberships`
+ * above is the other axis and is the wrong one here: it would be one query per
+ * frame, 835 of them for All photos.
+ *
+ * ponytail: N small queries per All-photos load, ~$0.000005 a call at ten rolls.
+ * The upgrade is a `folders` set denormalised onto the photo record inside the
+ * attach/detach transactions — take it only if the roll count makes this hurt,
+ * and note that `deleteFolder` drops memberships outside those transactions, so
+ * its cascade would have to maintain the set too.
+ */
+async function allMemberships() {
+  const folders = await db.listFolders();
+  const memberships: Record<string, string[]> = {};
+
+  // Concurrent, but each fold runs synchronously after its own await, so no two
+  // interleave on the shared object.
+  await Promise.all(
+    folders.map(async ({ folderId }) => {
+      for (const { photoId } of await db.listFolderMemberships(folderId)) {
+        (memberships[photoId] ??= []).push(folderId);
+      }
+    }),
+  );
+
+  return json(200, { memberships });
 }
 
 async function createShare(event: APIGatewayProxyEventV2, folderId: string) {
@@ -774,6 +864,14 @@ const routes: Array<{
     handle: (event) => photoMemberships(event),
   },
   {
+    // Every membership at once, folder-side. What All photos filters "unfiled"
+    // on, and what tells the lightbox which rolls the open frame is in.
+    method: 'GET',
+    pattern: /^\/api\/memberships$/,
+    admin: true,
+    handle: () => allMemberships(),
+  },
+  {
     // Uploads go to the library, never to a roll — hence no folder id here.
     method: 'POST',
     pattern: /^\/api\/uploads$/,
@@ -785,6 +883,12 @@ const routes: Array<{
     pattern: /^\/api\/photos\/([\w-]+)$/,
     admin: true,
     handle: (_e, [photoId]) => destroyPhoto(photoId),
+  },
+  {
+    method: 'POST',
+    pattern: /^\/api\/photos\/([\w-]+)\/develop$/,
+    admin: true,
+    handle: (_e, [photoId]) => redevelop(photoId),
   },
   {
     method: 'POST',

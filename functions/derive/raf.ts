@@ -56,5 +56,3 @@ export async function extractRafPreview(
 
   return jpeg;
 }
-
-export const isRaf = (ext: string) => ext.toLowerCase() === 'raf';

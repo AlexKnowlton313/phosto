@@ -8,6 +8,8 @@ export interface PhotoView {
   photoId: string;
   basename: string;
   takenAt: string;
+  /** When the frame entered the library — how a pending one is told from a stuck one. */
+  uploadedAt: string;
   ready: boolean;
   hasRaw: boolean;
   canDownload: boolean;
@@ -143,9 +145,18 @@ export const adminApi = (token: string) => ({
   /** Every photo, in no roll in particular. Backs the All photos view. */
   listLibrary: () => request<{ photos: PhotoView[] }>('/api/photos', {}, token),
 
-  /** Frames land in the library, in no roll. Filing them is `attachPhotos`. */
+  /**
+   * Frames land in the library, in no roll. Filing them is `attachPhotos`.
+   *
+   * `noPreview` names the files that will be stored without one — a RAW with no
+   * JPEG sibling in a format derive cannot extract a preview from. They upload
+   * fine and download fine; they just never get a thumbnail.
+   */
   requestUploads: (files: File[]) =>
-    request<{ uploads: Array<{ filename: string; url: string; photoId: string }> }>(
+    request<{
+      uploads: Array<{ filename: string; url: string; photoId: string }>;
+      noPreview: string[];
+    }>(
       '/api/uploads',
       {
         method: 'POST',
@@ -197,6 +208,21 @@ export const adminApi = (token: string) => ({
       { method: 'POST', body: JSON.stringify({ photoIds }) },
       token,
     ),
+
+  /**
+   * Which rolls each photo is in, keyed by photo id. A frame in no roll is
+   * absent rather than present with an empty list — that absence is exactly what
+   * *Unfiled* filters on, so read it as `memberships[id] ?? []`.
+   */
+  listMemberships: () =>
+    request<{ memberships: Record<string, string[]> }>('/api/memberships', {}, token),
+
+  /**
+   * Runs derive again for one frame. Returns as soon as S3 has the copy — the
+   * derivatives land seconds later, so the caller polls rather than waits.
+   */
+  develop: (photoId: string) =>
+    request<{ ok: true }>(`/api/photos/${photoId}/develop`, { method: 'POST' }, token),
 
   download: (photoId: string, kind: 'original' | 'raw') =>
     request<DownloadTarget>(

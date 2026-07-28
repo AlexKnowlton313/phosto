@@ -3,6 +3,8 @@ import * as cdk from 'aws-cdk-lib';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -13,6 +15,8 @@ import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 
@@ -26,6 +30,12 @@ export interface PhostoConfig {
   bucketName: string;
   signingKeyParameterName: string;
   signingPublicKeyPath: string;
+  /**
+   * Where alarms go. Optional, and the alarms only exist when it is set — an SNS
+   * email subscription has to be confirmed from the inbox, so there is no
+   * sensible default and a half-wired topic is worse than none.
+   */
+  alarmEmail?: string;
 }
 
 export interface PhostoStackProps extends cdk.StackProps {
@@ -485,6 +495,47 @@ function handler(event) {
         ],
       }),
     );
+
+    // ----------------------------------------------------------------- alarms
+
+    // Two of the ten CloudWatch gives away free. The first is the only thing that
+    // notices a frame failing to develop — there is no DLQ, Lambda retries an
+    // async invoke twice and then drops it, and a photo with no derivatives is
+    // otherwise indistinguishable from one still being worked on.
+    if (config.alarmEmail) {
+      const alarms = new sns.Topic(this, 'AlarmTopic', { displayName: 'phosto' });
+      alarms.addSubscription(new subscriptions.EmailSubscription(config.alarmEmail));
+      const notify = new cwActions.SnsAction(alarms);
+
+      deriveFn
+        .metricErrors({ period: cdk.Duration.minutes(5) })
+        .createAlarm(this, 'DeriveErrorsAlarm', {
+          threshold: 1,
+          evaluationPeriods: 1,
+          alarmDescription: 'A frame failed to develop',
+          // No invocations is the normal state here; missing data is not a fault.
+          treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        })
+        .addAlarmAction(notify);
+
+      // AWS/Billing is published to us-east-1 only, roughly every six hours. This
+      // stack is already us-east-1-bound (CloudFront needs its certificate there),
+      // so there is no cross-region alarm to arrange.
+      new cloudwatch.Alarm(this, 'EstimatedChargesAlarm', {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Billing',
+          metricName: 'EstimatedCharges',
+          dimensionsMap: { Currency: 'USD' },
+          statistic: 'Maximum',
+          period: cdk.Duration.hours(6),
+        }),
+        // The whole gallery is ~$0.29/month, so $5 is a runaway, not a busy week.
+        threshold: 5,
+        evaluationPeriods: 1,
+        alarmDescription: 'Monthly estimated charges above $5',
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction(notify);
+    }
 
     // ---------------------------------------------------------------- outputs
 

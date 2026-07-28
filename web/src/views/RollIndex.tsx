@@ -36,7 +36,7 @@ export function RollIndex({ api, config, folders, onFolderCreated, loadError }: 
   const [upload, setUpload] = useState<UploadState>();
   const [error, setError] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
-  const { prompt, dialog } = useDialog();
+  const { confirm, prompt, dialog } = useDialog();
 
   const newFolder = async () => {
     const name = await prompt({ title: 'Name this roll', confirmLabel: 'Create' });
@@ -52,7 +52,7 @@ export function RollIndex({ api, config, folders, onFolderCreated, loadError }: 
     setError(undefined);
 
     try {
-      const { uploads } = await api.requestUploads(list);
+      const { uploads, noPreview } = await api.requestUploads(list);
       const byName = new Map(list.map((f) => [f.name, f]));
       const progress = new Array<number>(uploads.length).fill(0);
 
@@ -91,6 +91,23 @@ export function RollIndex({ api, config, folders, onFolderCreated, loadError }: 
       );
 
       setUpload(undefined);
+
+      // Said here rather than left to be discovered as frames stuck at
+      // DEVELOPING: these are stored and downloadable, they just have no
+      // preview and never will. After the upload, not before — the records and
+      // presigned URLs already exist by the time the API can answer, so a
+      // cancel at this point would strand them.
+      if (noPreview.length > 0) {
+        await confirm({
+          title: `${noPreview.length} file(s) stored without a preview`,
+          body:
+            `${noPreview.slice(0, 3).join(', ')}${noPreview.length > 3 ? '…' : ''} ` +
+            'are RAW formats with no embedded-preview extractor. They stay in the ' +
+            'library and download fine, but will show no thumbnail.',
+          confirmLabel: 'OK',
+        });
+      }
+
       // Land on the sheet the frames actually went to; the hash change loads it.
       location.hash = LIBRARY_ID;
     } catch (err) {

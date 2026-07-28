@@ -31,6 +31,15 @@ interface Props {
   onDelete?: (photo: PhotoView) => void;
   /** Admin only, same as onDelete. Absent in the library, which is not a roll. */
   onSetCover?: (photo: PhotoView) => void;
+  /** Admin only. Offered on an undeveloped frame — a viewer never sees one. */
+  onDevelop?: (photo: PhotoView) => void;
+  /**
+   * The rolls this frame is in, by name. Admin All-photos only: a share viewer
+   * has no rolls, and inside a roll the answer is the roll you are already in.
+   * Absent means "don't say"; an empty array means "in no roll", which is the
+   * whole reason this is here.
+   */
+  rollsOf?: (photo: PhotoView) => string[];
 }
 
 export function Lightbox({
@@ -41,6 +50,8 @@ export function Lightbox({
   onDownload,
   onDelete,
   onSetCover,
+  onDevelop,
+  rollsOf,
 }: Props) {
   const photo = photos[index];
   const dialog = useRef<HTMLDialogElement>(null);
@@ -228,6 +239,8 @@ export function Lightbox({
     photo.iso ? `ISO ${photo.iso}` : undefined,
   ].filter(Boolean) as string[];
 
+  const rolls = rollsOf?.(photo);
+
   return (
     <dialog className="lightbox" aria-label={photo.basename} ref={dialog} tabIndex={-1}>
       <div className="lightbox-stage" ref={stage}>
@@ -273,6 +286,13 @@ export function Lightbox({
               ))}
             </div>
           )}
+          {/* Plain --muted, not amber: amber is negatives and nothing else, and
+              being unfiled is a fact about the frame, not a warning. */}
+          {rolls && (
+            <div className="exif">
+              <span>{rolls.length > 0 ? `In ${rolls.join(' · ')}` : 'In no roll'}</span>
+            </div>
+          )}
         </div>
 
         <div className="spacer" />
@@ -290,6 +310,13 @@ export function Lightbox({
             onClick={() => onDownload(photo, 'raw')}
           >
             Download RAW
+          </button>
+        )}
+        {/* Nothing to look at on an undeveloped frame — this is the one thing
+            worth offering on it. */}
+        {onDevelop && !photo.ready && (
+          <button type="button" className="btn" onClick={() => onDevelop(photo)}>
+            Develop again
           </button>
         )}
         {/* A photo with no derivative has no thumb.webp to use as a cover. */}

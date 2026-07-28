@@ -85,7 +85,15 @@ Mitigations built into the design:
   hotlinked or crawled without a signature.
 - Share tokens carry an expiry, `allowDownload` is off by default, and RAW is never shared.
 
-Set a billing alarm anyway.
+- `RollView` stops polling for pending derivatives after two minutes. Without
+  that ceiling one frame that can never develop — a RAW-only file in a format
+  with no preview extractor — makes an open tab re-read the entire library every
+  four seconds, which at 835 frames is ~$0.23/day of DynamoDB reads and ~84% of
+  the Lambda free tier, from one laptop.
+
+Set a billing alarm anyway: `alarmEmail` in `infra/config.json` wires up two —
+`EstimatedCharges` over $5, and any derive Lambda error — to an SNS topic. Both
+are within CloudWatch's ten free alarms. Leave it unset and neither is created.
 
 ## Comparison
 

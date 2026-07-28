@@ -53,4 +53,14 @@ export const basenameOf = (filename: string) =>
   filename.replace(/\.[^.]+$/, '').replace(/^.*[/\\]/, '');
 
 export const isRawExt = (ext: string) => RAW_EXTS.includes(ext.toLowerCase());
+
+/**
+ * The one RAW format whose embedded preview derive can lift out
+ * (`derive/raf.ts`). Every other entry in `RAW_EXTS` is stored without a
+ * preview, so a RAW-only frame in one of those formats can never develop —
+ * which is why `createUploads` says so up front rather than letting it appear
+ * as a frame stuck at DEVELOPING forever. Here rather than in `derive/` because
+ * the upload route needs the same answer.
+ */
+export const isRaf = (ext: string) => ext.toLowerCase() === 'raf';
 export const isImageExt = (ext: string) => IMAGE_EXTS.includes(ext.toLowerCase());

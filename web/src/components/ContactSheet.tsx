@@ -8,6 +8,13 @@ interface Props {
   onToggle: (photoId: string) => void;
 }
 
+/**
+ * How long a frame may sit undeveloped before the label stops claiming it is
+ * working on it. Matches `RollView`'s poll ceiling, so the sheet gives up
+ * looking and starts saying STUCK at the same moment.
+ */
+const STUCK_AFTER_MS = 2 * 60_000;
+
 function Frame({
   photo,
   index,
@@ -52,7 +59,11 @@ function Frame({
             onLoad={() => setLoaded(true)}
           />
         ) : (
-          <span className="frame-pending">DEVELOPING</span>
+          <span className="frame-pending">
+            {Date.now() - Date.parse(photo.uploadedAt) > STUCK_AFTER_MS
+              ? 'STUCK'
+              : 'DEVELOPING'}
+          </span>
         )}
 
         <span className="frame-no">{frameNumber}</span>
@@ -118,6 +129,48 @@ export function SkeletonSheet() {
           <span className="frame-no">{String(index + 1).padStart(2, '0')}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The sheet with nothing on it. Two different nothings, and telling them apart
+ * is the point: a filter that excludes all 835 frames must not read as a library
+ * that lost them.
+ */
+export function EmptySheet({
+  isLibrary,
+  /** Frames exist — the filters are what is hiding them. */
+  filtered,
+  /** *In no roll* is the only filter on, so an empty result is good news. */
+  unfiledOnly,
+}: {
+  isLibrary: boolean;
+  filtered: boolean;
+  unfiledOnly: boolean;
+}) {
+  return (
+    <div className="empty">
+      {filtered ? (
+        <>
+          <h2>No frames match</h2>
+          <p className="note">
+            {unfiledOnly
+              ? 'Every frame in the library is in at least one roll.'
+              : 'Nothing on this sheet fits the filters.'}
+          </p>
+        </>
+      ) : (
+        <>
+          <h2>{isLibrary ? 'No photos yet' : 'Empty roll'}</h2>
+          <p className="note">
+            {isLibrary
+              ? 'Add photos from the roll index. JPEGs and RAFs with matching ' +
+                'filenames become one frame.'
+              : 'Nothing here yet. Select frames in All photos and add them to this roll.'}
+          </p>
+        </>
+      )}
     </div>
   );
 }
