@@ -97,18 +97,28 @@ export async function loadConfig(): Promise<AppConfig> {
   return cachedConfig;
 }
 
+/**
+ * Resolved per request rather than bound once: the access token lives 8 hours and
+ * a tab outlives it. `currentToken` reads local storage and only touches Cognito
+ * when the token has actually expired, so this is a memory read on almost every
+ * call and a silent refresh on the one that matters — which is why there is no
+ * retry-on-401 anywhere.
+ */
+export type TokenSource = () => Promise<string | null>;
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
-  token?: string,
+  token?: TokenSource,
 ): Promise<T> {
+  const bearer = await token?.();
   const res = await fetch(path, {
     ...init,
     // Signed cookies are set by the API and read by CloudFront on image requests.
     credentials: 'include',
     headers: {
       ...(init.body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
       ...init.headers,
     },
   });
@@ -124,7 +134,7 @@ async function request<T>(
 
 // ------------------------------------------------------------------ admin API
 
-export const adminApi = (token: string) => ({
+export const adminApi = (token: TokenSource) => ({
   startSession: () => request<{ ok: true }>('/api/session', { method: 'POST' }, token),
 
   /** Expires the signed image cookies. Cognito sign-out alone leaves them live. */

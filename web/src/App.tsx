@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { loadConfig, type AppConfig } from './api';
 import { currentToken } from './auth';
 import { Admin } from './views/Admin';
@@ -39,6 +39,19 @@ export function App() {
     };
   }, [token$]);
 
+  /**
+   * What every admin request resolves its bearer from. Stable per config, so
+   * `Admin`'s effects can key on it. Cognito refreshes the access token silently
+   * for 30 days; when even that runs out this returns null, and dropping `token`
+   * puts the sign-in form up instead of a page of 401 lines.
+   */
+  const getToken = useCallback(async () => {
+    if (!config) return null;
+    const next = await currentToken(config);
+    if (!next) setToken(null);
+    return next;
+  }, [config]);
+
   if (token$) return <Share token={token$} />;
 
   if (failed) {
@@ -70,5 +83,5 @@ export function App() {
     );
   }
 
-  return <Admin config={config} token={token} />;
+  return <Admin config={config} getToken={getToken} />;
 }

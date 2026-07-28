@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import { adminApi, LIBRARY_ID, type AppConfig, type FolderView } from '../api';
+import {
+  adminApi,
+  LIBRARY_ID,
+  type AppConfig,
+  type FolderView,
+  type TokenSource,
+} from '../api';
 import { RollIndex } from './RollIndex';
 import { RollView } from './RollView';
 
@@ -21,8 +27,14 @@ const currentHash = () => location.hash.slice(1);
  * The admin shell: the folder list, which roll is open, and nothing else. Both
  * halves below own their own state — see `RollView`, which is mounted per roll.
  */
-export function Admin({ config, token }: { config: AppConfig; token: string }) {
-  const api = adminApi(token);
+export function Admin({
+  config,
+  getToken,
+}: {
+  config: AppConfig;
+  getToken: TokenSource;
+}) {
+  const api = adminApi(getToken);
   const [folders, setFolders] = useState<FolderView[]>();
   const [error, setError] = useState<string>();
   const folderId = useSyncExternalStore(subscribeToHash, currentHash);
@@ -43,12 +55,23 @@ export function Admin({ config, token }: { config: AppConfig; token: string }) {
       .then((r) => setFolders(r.folders))
       .catch((err: Error) => setError(err.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [getToken]);
+
+  // The cookie runs on its own clock, not the JWT's, and expires at SESSION_TTL
+  // (8h) — after which the sheet fills with 403s that look like broken images.
+  // Re-minting at half that means it is never within four hours of lapsing while
+  // a tab is alive. Swallowed: a failed renewal must not take a working page
+  // down, and the next tick tries again.
+  useEffect(() => {
+    const id = setInterval(() => void api.startSession().catch(() => {}), 4 * 3600_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [getToken]);
 
   const reloadFolders = useCallback(async () => {
     setFolders((await api.listFolders()).folders);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [getToken]);
 
   // Synthesised so the roll view can read `folder.name` without branching on
   // every line. Its `photoCount` is the sheet's own length, so it stays 0 here.
