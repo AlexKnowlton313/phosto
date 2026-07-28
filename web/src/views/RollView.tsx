@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   LIBRARY_ID,
+  NOTE_MAX,
   saveAs,
   type AdminApi,
   type FolderView,
@@ -175,6 +176,24 @@ export function RollView({
   };
 
   /**
+   * The roll's line about itself. Blank is a real answer here and clears it —
+   * only cancelling returns null — which is why this checks for null rather
+   * than falsiness the way renameRoll does.
+   */
+  const editNote = async () => {
+    const note = await prompt({
+      title: 'A line about this roll',
+      body: 'Shown on the share link and in its preview. Leave blank to remove it.',
+      value: folder.note ?? '',
+      multiline: true,
+      maxLength: NOTE_MAX,
+      confirmLabel: 'Save',
+    });
+    if (note === null) return;
+    onFolderUpdated(await api.updateFolder(folderId, { note }));
+  };
+
+  /**
    * Drops the roll. No frame is at risk: a roll holds pointers, so the
    * photographs stay in the library and in any other roll they are in.
    */
@@ -253,7 +272,9 @@ export function RollView({
       <EdgeHeader
         name={folder.name}
         photos={visible ?? []}
+        note={folder.note}
         onRename={isLibrary ? undefined : renameRoll}
+        onEditNote={isLibrary ? undefined : editNote}
       />
 
       <div className="toolbar">

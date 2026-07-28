@@ -46,6 +46,9 @@ const SHARE_TTL = 60 * 60 * 12; // viewer cookies; the share itself expires sepa
 const DOWNLOAD_TTL = 60 * 5; // one-off signed URLs for originals and RAWs
 const UPLOAD_TTL = 60 * 60; // presigned PUT, generous enough for a 30MB RAF
 
+const NOTE_MAX = 500; // a roll's note; a paragraph, not an essay
+const OG_DESCRIPTION_MAX = 200; // where every unfurler cuts anyway
+
 const verifier = CognitoJwtVerifier.create({
   userPoolId: process.env.USER_POOL_ID!,
   tokenUse: 'access',
@@ -589,7 +592,7 @@ async function openShare(token: string) {
   // The trade: detaching a frame revokes nothing already issued. Those URLs stop
   // working when they expire, not before.
   return json(200, {
-    folder: { name: folder.name, photoCount: photos.length },
+    folder: { name: folder.name, photoCount: photos.length, note: folder.note },
     permissions: { allowDownload: share.allowDownload },
     // Shares are JPEG-only, always: RAW never leaves the owner's own view.
     photos: await Promise.all(
@@ -685,6 +688,21 @@ async function sharePage(token: string): Promise<APIGatewayProxyStructuredResult
       '<meta name="twitter:card" content="summary_large_image">',
       `<meta name="twitter:title" content="${escapeAttr(folder.name)}">`,
     );
+    // Omitted rather than filled with a stand-in: an unfurler that gets no
+    // description leaves the line out, which beats every share carrying the
+    // same invented sentence.
+    if (folder.note) {
+      // Newlines are legal inside an attribute value but render as whatever the
+      // unfurler feels like, so the paragraph is folded to one line here. The
+      // share page itself keeps the breaks.
+      const description = escapeAttr(
+        folder.note.replace(/\s+/g, ' ').slice(0, OG_DESCRIPTION_MAX),
+      );
+      tags.push(
+        `<meta property="og:description" content="${description}">`,
+        `<meta name="twitter:description" content="${description}">`,
+      );
+    }
     if (folder.coverPhotoId) {
       tags.push(
         `<meta property="og:image" content="${url}/og.webp">`,
@@ -825,6 +843,10 @@ const routes: Array<{
         name: patch.name?.trim(),
         coverPhotoId: patch.coverPhotoId,
         sortOrder: patch.sortOrder,
+        // Truncated rather than refused: it is one paragraph on a record, and a
+        // 400 on a note that ran long is a worse answer than a shorter note.
+        // Unlike `name`, an empty string writes through — that is the clear.
+        note: patch.note?.trim().slice(0, NOTE_MAX),
       });
       return json(200, await db.getFolder(folderId));
     },

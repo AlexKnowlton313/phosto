@@ -62,7 +62,7 @@ export function Share({ token }: { token: string }) {
 
   return (
     <>
-      <EdgeHeader name={data.folder.name} photos={data.photos} />
+      <EdgeHeader name={data.folder.name} photos={data.photos} note={data.folder.note} />
 
       {(error ?? status) && (
         <p className={error ? 'error' : 'note'} style={{ padding: '16px 24px' }}>

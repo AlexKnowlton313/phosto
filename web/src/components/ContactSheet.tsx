@@ -198,13 +198,19 @@ const dayMonth = (iso: string) =>
 export function EdgeHeader({
   name,
   photos,
+  note,
   onRename,
+  onEditNote,
 }: {
   name: string;
   photos: PhotoView[];
+  /** The roll's own line about itself, shown to the share viewer and to the
+   * admin — the admin has to read what a link is about to say. */
+  note?: string;
   /** Admin only, and absent on the All photos view, which is not a roll —
    * same pattern as Lightbox's onDelete. A share viewer never sees it. */
   onRename?: () => void;
+  onEditNote?: () => void;
 }) {
   // flatMap over map+filter: an undefined takenAt drops out as an empty slot
   // rather than surviving into the sort as a falsy string.
@@ -239,6 +245,15 @@ export function EdgeHeader({
         {cameras.length === 1 && <span>{cameras[0]}</span>}
         {rawCount > 0 && <span>{rawCount} raw</span>}
       </div>
+      {/* Under the data line, not over it: the frame count is what the header is
+          for, and the note is the caption to it. Plain text, so the newlines the
+          textarea allows are kept by CSS rather than by parsing anything. */}
+      {note && <p className="edge-note">{note}</p>}
+      {onEditNote && (
+        <button type="button" className="edge-rename edge-note-edit" onClick={onEditNote}>
+          {note ? 'Edit note' : 'Add a note'}
+        </button>
+      )}
     </header>
   );
 }

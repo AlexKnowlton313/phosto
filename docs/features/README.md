@@ -4,26 +4,22 @@ Things phosto does not do yet, one document each. Every one is written against
 the code as it stands: what is missing, why it matters given this architecture,
 the smallest design that works, and what it costs.
 
-Ranked by value against effort. Range select, roll sort order, staying signed in
-and bulk-download progress have shipped; a shipped note leaves the table and its
-document goes with it, so what is here is what is still missing.
+Ranked by value against effort. Range select, roll sort order, staying signed in,
+bulk-download progress and the share note have shipped; a shipped note leaves the
+table and its document goes with it, so what is here is what is still missing.
 
 | # | Feature | For | Effort | Why |
 |---|---|---|---|---|
 | 6 | [Trash](trash.md) | admin | medium | The one irreversible action in an app otherwise built so mistakes cannot lose a photograph. ~$0.05 to hold a 100-frame delete for 30 days. |
-| 8 | [A line of text on a share](share-note.md) | share viewer | tiny | Nowhere to say what a roll is, and `og:description` is missing entirely, so every link preview has an empty description line. |
 | 9 | [Viewer picks](share-picks.md) | share viewer | small, no server | Marking frames on a contact sheet is what a contact sheet is *for*. localStorage + clipboard, no API surface. |
-
-8 is one key added to `db.updateFolder`'s whitelist — `sortOrder` went in the
-same way.
 
 ## Considered and not proposed
 
 - **Per-photo captions.** Needs a field on `Photo`, presence in both
   presentations, and a decision about whether a caption follows a frame into
   every roll it is in — which, given a photo is owned by nobody, it must. The
-  roll-level note in [share-note.md](share-note.md) covers most of the want for
-  one string on a record that already gets patched.
+  shipped roll-level `note` covers most of the want for one string on a record
+  that already gets patched.
 - **Favourites / star ratings.** A roll already *is* a set of pointers, and a
   frame can be in as many as you like. "Picks" is a roll called Picks. Adding a
   parallel marking system would be a second membership model doing the first

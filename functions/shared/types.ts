@@ -11,6 +11,13 @@ export interface Folder {
    * after reading — no key moves, and membership sort keys are untouched.
    */
   sortOrder?: 'newest' | 'oldest';
+  /**
+   * One paragraph of plain text about the roll, shown under the share's header
+   * and as its `og:description`. Plain text on purpose: it goes into an OG
+   * attribute and into the DOM, and a string `escapeAttr` handles is one fewer
+   * injection surface than markdown would be. `''` is how a note is cleared.
+   */
+  note?: string;
 }
 
 /**

@@ -9,7 +9,17 @@ interface Choice {
 
 type Ask =
   | { kind: 'confirm'; title: string; body?: string; confirmLabel?: string; danger?: boolean }
-  | { kind: 'prompt'; title: string; body?: string; value?: string; confirmLabel?: string }
+  | {
+      kind: 'prompt';
+      title: string;
+      body?: string;
+      value?: string;
+      confirmLabel?: string;
+      /** A paragraph rather than a line — a `<textarea>`, and Enter breaks a
+       * line instead of submitting. */
+      multiline?: boolean;
+      maxLength?: number;
+    }
   | { kind: 'choose'; title: string; body?: string; options: Choice[] };
 
 /**
@@ -90,23 +100,37 @@ export function useDialog() {
         className="modal-body"
         onSubmit={(e) => {
           e.preventDefault();
-          answer(ask.kind === 'prompt' ? text.trim() || null : true);
+          // Submitting a blank field resolves `''`, not null: that is how a
+          // note is cleared. Only cancelling gives null, so the callers that
+          // must have a value still reject both with one `if (!value)`.
+          answer(ask.kind === 'prompt' ? text.trim() : true);
         }}
       >
         <h2 className="modal-title">{ask.title}</h2>
         {ask.body && <p className="note">{ask.body}</p>}
 
-        {ask.kind === 'prompt' && (
-          <input
-            type="text"
-            autoFocus
-            // The title is the question, so it is also this field's label; a
-            // visible <label> would repeat it a line lower.
-            aria-label={ask.title}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-        )}
+        {ask.kind === 'prompt' &&
+          // The title is the question, so it is also this field's label; a
+          // visible <label> would repeat it a line lower.
+          (ask.multiline ? (
+            <textarea
+              autoFocus
+              rows={4}
+              aria-label={ask.title}
+              maxLength={ask.maxLength}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          ) : (
+            <input
+              type="text"
+              autoFocus
+              aria-label={ask.title}
+              maxLength={ask.maxLength}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          ))}
 
         {ask.kind === 'choose' && (
           <div className="modal-choices">
@@ -145,7 +169,7 @@ export function useDialog() {
   return {
     confirm: (a: Omit<Extract<Ask, { kind: 'confirm' }>, 'kind'>) =>
       open({ ...a, kind: 'confirm' }) as Promise<boolean>,
-    /** Resolves the trimmed text, or null if cancelled or left blank. */
+    /** Resolves the trimmed text — `''` if submitted blank — or null if cancelled. */
     prompt: (a: Omit<Extract<Ask, { kind: 'prompt' }>, 'kind'>) =>
       open({ ...a, kind: 'prompt' }) as Promise<string | null>,
     /** Resolves the chosen option's id, or null. */

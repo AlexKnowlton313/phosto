@@ -152,6 +152,25 @@ button {
   color: var(--line);
 }
 
+/* The one piece of prose in the app, so it is set as prose: body face, not the
+   mono edge-printing, and measure-limited. `pre-wrap` keeps the line breaks the
+   textarea allows without the note being anything but plain text. */
+.edge-note {
+  margin: 12px 0 0;
+  max-width: 62ch;
+  white-space: pre-wrap;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* Reuses .edge-rename's look — same kind of quiet edit affordance — but it sits
+   under the note rather than inside the h1. */
+.edge-note-edit {
+  display: inline-block;
+  margin: 8px 0 0;
+}
+
 .edge-data span:first-child::before {
   content: none;
 }
@@ -571,6 +590,7 @@ input[type='email'],
 input[type='password'],
 input[type='number'],
 input[type='month'],
+textarea,
 select {
   font: inherit;
   color: var(--ink);
@@ -582,9 +602,16 @@ select {
 }
 
 input:focus,
+textarea:focus,
 select:focus {
   border-color: var(--faint);
   outline: none;
+}
+
+/* Vertical only: the modal sizes the width, and a user-widened textarea would
+   drag the dialog out with it. */
+textarea {
+  resize: vertical;
 }
 
 .check {

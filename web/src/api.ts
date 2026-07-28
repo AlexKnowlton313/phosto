@@ -40,7 +40,14 @@ export interface FolderView {
    * list the API returns, so reading a roll costs no extra folder lookup.
    */
   sortOrder?: 'newest' | 'oldest';
+  /** One paragraph about the roll. Shown on the share and as its og:description;
+   * `''` clears it. Absent on All photos, which is not a folder. */
+  note?: string;
 }
+
+/** Mirrors `NOTE_MAX` in the API, which truncates rather than refusing — this is
+ * only so the field stops taking characters the server would drop. */
+export const NOTE_MAX = 500;
 
 /**
  * The "All photos" pseudo-roll. Not a folder on the server and never sent to one:
@@ -80,7 +87,7 @@ export interface ShareSummary {
 }
 
 export interface ShareView {
-  folder: { name: string; photoCount: number };
+  folder: { name: string; photoCount: number; note?: string };
   permissions: { allowDownload: boolean };
   photos: PhotoView[];
 }
