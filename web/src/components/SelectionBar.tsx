@@ -1,4 +1,5 @@
 import {
+  NEW_ROLL,
   saveAs,
   type AdminApi,
   type FolderView,
@@ -82,7 +83,7 @@ export function SelectionBar({
   batching,
   setBatching,
 }: Props) {
-  const { confirm, choose, dialog } = useDialog();
+  const { confirm, choose, prompt, dialog } = useDialog();
 
   const downloadSelected = async (kind: 'original' | 'raw') => {
     setError(undefined);
@@ -109,10 +110,13 @@ export function SelectionBar({
    * Puts the selection into another roll. A frame can be in as many rolls as you
    * like, so this adds rather than moves — it leaves the current roll untouched,
    * and there is no destination it could fail to reach.
+   *
+   * The destination can be a roll that does not exist yet: filing an import is
+   * the one moment you know what the roll should be called, and leaving to make
+   * it costs the selection you came with.
    */
   const addToRoll = async () => {
     const others = (folders ?? []).filter((f) => f.folderId !== folder.folderId);
-    if (others.length === 0) return;
 
     // Which rolls already hold some of this selection. Re-adding is a harmless
     // no-op, so a failure here costs a hint and nothing else — show the picker
@@ -122,21 +126,33 @@ export function SelectionBar({
       .then((r) => r.counts)
       .catch(() => ({}) as Record<string, number>);
 
-    const targetId = await choose({
+    const choice = await choose({
       title: `Add ${selected.size} frame(s) to…`,
       body: 'The frames stay where they are — a frame can be in several rolls.',
-      options: others.map((f) => ({
-        id: f.folderId,
-        name: f.name,
-        note:
-          counts[f.folderId] === undefined
-            ? undefined
-            : counts[f.folderId] === selected.size
-              ? 'all already in'
-              : `${counts[f.folderId]} already in`,
-      })),
+      options: [
+        { id: NEW_ROLL, name: 'New roll…' },
+        ...others.map((f) => ({
+          id: f.folderId,
+          name: f.name,
+          note:
+            counts[f.folderId] === undefined
+              ? undefined
+              : counts[f.folderId] === selected.size
+                ? 'all already in'
+                : `${counts[f.folderId]} already in`,
+        })),
+      ],
     });
-    const target = others.find((f) => f.folderId === targetId);
+    if (!choice) return;
+
+    let target = others.find((f) => f.folderId === choice);
+    if (choice === NEW_ROLL) {
+      const name = await prompt({ title: 'Name this roll', confirmLabel: 'Create' });
+      if (!name) return;
+      // reloadFolders below is what puts it in the shell's list; nothing
+      // navigates, because the selection is still on the sheet behind this.
+      target = await api.createFolder(name);
+    }
     if (!target) return;
 
     setError(undefined);
@@ -236,13 +252,11 @@ export function SelectionBar({
           Download RAWs
         </button>
       )}
-      {/* Adds, never moves — a frame can be in several rolls. Needs at least one
-          roll that is not the one being looked at. */}
-      {(folders ?? []).some((f) => f.folderId !== folder.folderId) && (
-        <button type="button" className="btn" disabled={batching} onClick={addToRoll}>
-          Add to roll…
-        </button>
-      )}
+      {/* Adds, never moves — a frame can be in several rolls. Always offered:
+          the picker can make the roll, so there is no "no destination" case. */}
+      <button type="button" className="btn" disabled={batching} onClick={addToRoll}>
+        Add to roll…
+      </button>
       {/* Exactly one of these two, never both. Inside a roll the answer to "get
           rid of this" is almost always "take it out of this roll", and the
           destructive twin sitting beside it is a misclick that loses a negative.

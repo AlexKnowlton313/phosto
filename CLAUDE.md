@@ -436,6 +436,15 @@ listener is what tells React, so Esc, the button and the backdrop all leave the
 same way. Its CSS undoes the UA's dialog box — border, padding, auto margins and
 a `fit-content` size that would otherwise shrink the overlay to the image.
 
+**Getting *into* a selection is not a `SelectionBar` job** — the bar only exists
+once something is selected. The checkmark on a cell is the way in, *Select all* is
+in `RollView`'s toolbar beside *All rolls*, and it takes `visible` rather than
+`photos`: it selects what is printed on the sheet. Shift-click ranges from the
+last frame toggled, and it only ever **adds** — the anchor is wherever the last
+click landed, so a range that could also deselect would make one gesture mean two
+things. `ContactSheet` passes the sheet's ids as `order` on a shift-click only, so
+`useSelection` never has to know what is on the sheet.
+
 Selection actions live in `SelectionBar` (`.toolbar-footer`), a sticky bar at the
 foot of the sheet, not in the roll toolbar — they act on the selection, not the
 roll. `batching` is owned by `RollView` and passed down, so the roll toolbar

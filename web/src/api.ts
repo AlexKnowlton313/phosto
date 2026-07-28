@@ -45,6 +45,14 @@ export interface FolderView {
 export const LIBRARY_ID = 'all';
 
 /**
+ * The "New roll…" option in a roll picker. A sentinel for the same reason as
+ * `LIBRARY_ID`: `randomUUID()` cannot mint it, so it can never be a real roll's
+ * id. Every picker that offers it does the same thing — prompt for a name,
+ * `createFolder`, then attach to the id that comes back.
+ */
+export const NEW_ROLL = 'new';
+
+/**
  * A live link as the list route returns it: `tokenHash` stripped and replaced by
  * its first 12 hex characters. There is no URL here and there never can be —
  * only the hash is stored.

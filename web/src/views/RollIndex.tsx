@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import {
   LIBRARY_ID,
+  NEW_ROLL,
   uploadFile,
   type AdminApi,
   type AppConfig,
@@ -14,9 +15,6 @@ const UPLOAD_CONCURRENCY = 4;
 
 /** `createUploads`' own cap. The client slices to it rather than hit the 400. */
 const BATCH = 200;
-
-/** Sentinel choice in the file-on-the-spot picker; no folder id can be `new`. */
-const NEW_ROLL = 'new';
 
 /** Filename without its extension — what pairs XT300024.JPG with .RAF. */
 const stemOf = (filename: string) => filename.replace(/\.[^.]+$/, '');

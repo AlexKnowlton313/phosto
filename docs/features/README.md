@@ -2,13 +2,13 @@
 
 Things phosto does not do yet, one document each. Every one is written against
 the code as it stands: what is missing, why it matters given this architecture,
-the smallest design that works, and what it costs. None of them is implemented.
+the smallest design that works, and what it costs.
 
 Ranked by value against effort — the top three are the ones worth doing first.
+[Range select](range-select.md) has since shipped and is out of the table.
 
 | # | Feature | For | Effort | Why |
 |---|---|---|---|---|
-| 1 | [Range select, select all, "New roll…"](range-select.md) | admin | tiny, client only | Filing a 200-frame import is 200 clicks. Attach has no batch cap; the UI is the bottleneck. |
 | 5 | [Staying signed in](session-renewal.md) | admin | small | Token and image cookie both expire at 8h and neither renews. Shows up as broken images and a 401 line; recovery is a reload you have to guess at. |
 | 6 | [Trash](trash.md) | admin | medium | The one irreversible action in an app otherwise built so mistakes cannot lose a photograph. ~$0.05 to hold a 100-frame delete for 30 days. |
 | 7 | [Roll sort order](roll-sort-order.md) | both | tiny | Frame 01 is currently the *last* exposure — backwards for the one metaphor the whole design runs on. |

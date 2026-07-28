@@ -76,7 +76,9 @@ files with a matching basename (`XT300024.JPG` + `.RAF`) become one frame. Drop 
 whole card on it: the client batches the selection to fit the upload route, warns
 if the filenames are already in the library, and offers to file the frames into a
 roll when they land. Declining leaves them in the library and in no roll — file
-them later from **All photos** with *Add to roll*.
+them later from **All photos** with *Add to roll*, which can file them into a roll
+that does not exist yet. Frames are picked with the checkmark on a cell —
+shift-click extends from the last one, and *Select all* takes the whole sheet.
 
 **All photos** filters by filename, camera, month, RAW and — the one that matters
 after a card dump — **in no roll**, which is how you find what is still unfiled.

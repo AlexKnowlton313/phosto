@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PhotoView } from '../api';
 import { modalOpen } from './Dialog';
 
@@ -11,11 +11,34 @@ import { modalOpen } from './Dialog';
  */
 export function useSelection() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // The last frame toggled, as the far end of a shift-click range.
+  const anchor = useRef<string>();
 
-  const toggle = useCallback((photoId: string) => {
+  /**
+   * Toggles one frame — or, given `order`, selects everything between the last
+   * frame toggled and this one.
+   *
+   * `order` is the sheet's photoIds and arrives only on a shift-click, so the
+   * hook never has to know what is on the sheet, and building it costs nothing
+   * on an ordinary click.
+   */
+  const toggle = useCallback((photoId: string, order: string[] = []) => {
+    const from = anchor.current ? order.indexOf(anchor.current) : -1;
+    const to = order.indexOf(photoId);
+    anchor.current = photoId;
+
     setSelected((prev) => {
       const next = new Set(prev);
-      if (!next.delete(photoId)) next.add(photoId);
+      // A range only ever adds. The anchor is wherever the last click landed, so
+      // a range that could also deselect would make one gesture mean two things
+      // depending on a state the sheet does not show.
+      if (from >= 0 && to >= 0) {
+        for (const id of order.slice(Math.min(from, to), Math.max(from, to) + 1)) {
+          next.add(id);
+        }
+      } else if (!next.delete(photoId)) {
+        next.add(photoId);
+      }
       return next;
     });
   }, []);
@@ -23,10 +46,12 @@ export function useSelection() {
   // Returning `prev` when already empty matters: this fires on every Escape in
   // the app, including the one that closes the lightbox, and a fresh Set there
   // would re-render the whole sheet for nothing.
-  const clear = useCallback(
-    () => setSelected((prev) => (prev.size ? new Set() : prev)),
-    [],
-  );
+  const clear = useCallback(() => {
+    // Dropping the anchor too, or the next shift-click ranges back to a frame
+    // selected before the selection was thrown away.
+    anchor.current = undefined;
+    setSelected((prev) => (prev.size ? new Set() : prev));
+  }, []);
 
   /** Drops ids that are no longer on the sheet, e.g. after a photo is deleted. */
   const retain = useCallback((photoIds: string[]) => {
@@ -48,7 +73,7 @@ export function useSelection() {
     return () => window.removeEventListener('keydown', onKey);
   }, [clear]);
 
-  return { selected, toggle, clear, retain };
+  return { selected, setSelected, toggle, clear, retain };
 }
 
 /**

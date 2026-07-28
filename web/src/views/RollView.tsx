@@ -112,7 +112,7 @@ export function RollView({
   // What a batch actually did — "Added 12 frame(s) to Iceland (3 already there)",
   // or a running count while a long delete works through the selection.
   const [status, setStatus] = useState<string>();
-  const { selected, toggle, clear, retain } = useSelection();
+  const { selected, setSelected, toggle, clear, retain } = useSelection();
   const { confirm, prompt, dialog } = useDialog();
 
   const folderId = folder.folderId;
@@ -141,6 +141,11 @@ export function RollView({
     () => (isLibrary && photos ? filterPhotos(photos, filters, memberships) : photos),
     [isLibrary, photos, filters, memberships],
   );
+
+  // Over `visible`, not `photos`: select-all means what is printed on the sheet,
+  // the same list the frame numbers and the lightbox run over.
+  const allSelected =
+    !!visible?.length && visible.every((p) => selected.has(p.photoId));
 
   useEffect(() => {
     refresh().catch((err: Error) => setError(err.message));
@@ -249,6 +254,23 @@ export function RollView({
         >
           ← All rolls
         </button>
+
+        {/* Here and not in SelectionBar: the bar only exists once something is
+            selected, so it cannot be the way *in* to a selection. */}
+        {visible && visible.length > 0 && (
+          <button
+            type="button"
+            className="btn"
+            disabled={batching}
+            onClick={() =>
+              allSelected
+                ? clear()
+                : setSelected(new Set(visible.map((p) => p.photoId)))
+            }
+          >
+            {allSelected ? 'Select none' : `Select all ${visible.length}`}
+          </button>
+        )}
 
         <div className="spacer" />
 

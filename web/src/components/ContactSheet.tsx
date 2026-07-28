@@ -5,7 +5,8 @@ interface Props {
   photos: PhotoView[];
   selected: Set<string>;
   onOpen: (index: number) => void;
-  onToggle: (photoId: string) => void;
+  /** `order` is the sheet's photoIds, passed only on a shift-click range. */
+  onToggle: (photoId: string, order?: string[]) => void;
 }
 
 /**
@@ -28,7 +29,7 @@ function Frame({
   selected: boolean;
   selecting: boolean;
   onOpen: () => void;
-  onToggle: () => void;
+  onToggle: (shift: boolean) => void;
 }) {
   const [loaded, setLoaded] = useState(false);
 
@@ -43,7 +44,9 @@ function Frame({
       <button
         type="button"
         className={`frame${selected ? ' frame-selected' : ''}`}
-        onClick={selecting ? onToggle : onOpen}
+        // Shift-click ranges only once the mode is on — outside it this button
+        // opens the lightbox, and the checkmark is still the only way in.
+        onClick={(e) => (selecting ? onToggle(e.shiftKey) : onOpen())}
         // Only a toggle while the mode is on; outside it this button opens a
         // dialog and announcing it as pressable would be a lie.
         aria-pressed={selecting ? selected : undefined}
@@ -74,7 +77,7 @@ function Frame({
       <button
         type="button"
         className="frame-check"
-        onClick={onToggle}
+        onClick={(e) => onToggle(e.shiftKey)}
         aria-pressed={selected}
         aria-label={`Select frame ${frameNumber}`}
       >
@@ -102,7 +105,12 @@ export function ContactSheet({ photos, selected, onOpen, onToggle }: Props) {
             selected={selected.has(photo.photoId)}
             selecting={selected.size > 0}
             onOpen={() => onOpen(index)}
-            onToggle={() => onToggle(photo.photoId)}
+            onToggle={(shift) =>
+              // The order is built per shift-click rather than held: the sheet
+              // re-renders on every selection change, and this costs one pass
+              // over an array that is already in hand.
+              onToggle(photo.photoId, shift ? photos.map((p) => p.photoId) : undefined)
+            }
           />
         ))}
       </div>
