@@ -9,8 +9,6 @@ Ranked by value against effort — the top three are the ones worth doing first.
 | # | Feature | For | Effort | Why |
 |---|---|---|---|---|
 | 1 | [Range select, select all, "New roll…"](range-select.md) | admin | tiny, client only | Filing a 200-frame import is 200 clicks. Attach has no batch cap; the UI is the bottleneck. |
-| 3 | [Finding frames: unfiled, camera, date, name](find-unfiled-frames.md) | admin | small + one route | After the second import there is nothing distinguishing filed from unfiled. Every filter but *unfiled* is free — the data is already in memory. |
-| 4 | [Card dumps: batching, duplicates, filing](import-batches.md) | admin | small | >200 files fails the whole selection. Re-importing a card silently doubles 8.6 GB with no warning. |
 | 5 | [Staying signed in](session-renewal.md) | admin | small | Token and image cookie both expire at 8h and neither renews. Shows up as broken images and a 401 line; recovery is a reload you have to guess at. |
 | 6 | [Trash](trash.md) | admin | medium | The one irreversible action in an app otherwise built so mistakes cannot lose a photograph. ~$0.05 to hold a 100-frame delete for 30 days. |
 | 7 | [Roll sort order](roll-sort-order.md) | both | tiny | Frame 01 is currently the *last* exposure — backwards for the one metaphor the whole design runs on. |
@@ -19,9 +17,8 @@ Ranked by value against effort — the top three are the ones worth doing first.
 | 10 | [Bulk download: progress, don't stop at the first failure](share-bulk-download.md) | both | small | 40 frames is 11 seconds of a disabled button, and one transient failure abandons the rest with no record of what landed. |
 
 Several share an edit. 7 and 8 are both one key added to `db.updateFolder`'s
-whitelist. 1 and 4 are both `useSelection` and the `choose()` picker. 10 is the
-same loop in `Share.tsx` and `SelectionBar.tsx`, which is an argument for
-lifting it into `api.ts` once.
+whitelist. 10 is the same loop in `Share.tsx` and `SelectionBar.tsx`, which is an
+argument for lifting it into `api.ts` once.
 
 ## Considered and not proposed
 

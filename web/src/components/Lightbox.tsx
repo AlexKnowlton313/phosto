@@ -68,9 +68,24 @@ export function Lightbox({
   }, [index]);
 
   // Native modal: the top layer is what puts this over the sheet without a
-  // z-index argument, and Esc closing it comes from the platform.
+  // z-index argument, and Esc closing it comes from the platform. showModal()
+  // also moves focus into the dialog, so keyboard and screen-reader users are
+  // not left behind the overlay.
+  //
+  // Closing hands focus back to whatever showModal() captured as the opener —
+  // ring and all, since a restored focus matches :focus-visible — which left the
+  // amber outline painted on a cell the user had only clicked. So the opener is
+  // blurred *before* showModal(), and only a keyboard opener is handed focus
+  // back on the way out. Blurring on close instead does not work: the UA's own
+  // restoration runs after it.
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    const restore = opener?.matches(':focus-visible') ?? false;
+    if (!restore) opener?.blur?.();
     dialog.current?.showModal();
+    return () => {
+      if (restore) opener?.focus?.();
+    };
   }, []);
 
   // Esc and a backdrop click both close the element without telling React, so
@@ -191,20 +206,6 @@ export function Lightbox({
       node.removeEventListener('pointermove', onMove);
       node.removeEventListener('pointerup', onUp);
       node.removeEventListener('pointercancel', onUp);
-    };
-  }, []);
-
-  // Move focus into the dialog on open and hand it back to the grid on close,
-  // so keyboard and screen-reader users are not left behind the overlay.
-  // Only if the frame was keyboard-focused to begin with: a programmatic
-  // .focus() matches :focus-visible, so restoring it to a frame the user merely
-  // clicked leaves the amber ring painted on the cell after the lightbox closes.
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const restore = previous?.matches(':focus-visible') ?? false;
-    dialog.current?.focus();
-    return () => {
-      if (restore) previous?.focus?.();
     };
   }, []);
 

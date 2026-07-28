@@ -497,13 +497,14 @@ async function photoMemberships(event: APIGatewayProxyEventV2) {
  *
  * Fanned out over folders, not photos — N queries for N rolls. `photoMemberships`
  * above is the other axis and is the wrong one here: it would be one query per
- * frame, 835 of them for All photos.
+ * frame, 653 of them for All photos.
  *
- * ponytail: N small queries per All-photos load, ~$0.000005 a call at ten rolls.
- * The upgrade is a `folders` set denormalised onto the photo record inside the
- * attach/detach transactions — take it only if the roll count makes this hurt,
- * and note that `deleteFolder` drops memberships outside those transactions, so
- * its cascade would have to maintain the set too.
+ * ponytail: N small queries per All-photos load. Measured at 4 rolls and 648
+ * memberships: 27 RRU, $0.0000034 a call. The upgrade is a `folders` set
+ * denormalised onto the photo record inside the attach/detach transactions —
+ * take it only if the roll count makes this hurt, and note that `deleteFolder`
+ * drops memberships outside those transactions, so its cascade would have to
+ * maintain the set too.
  */
 async function allMemberships() {
   const folders = await db.listFolders();

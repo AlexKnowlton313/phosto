@@ -640,6 +640,13 @@ select:focus {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: filter 120ms ease;
+}
+
+/* A cover fills the tile, so .roll:hover's background change is invisible
+   under it. Lighten the image by the same amount instead (--bg → --surface). */
+.roll-cover:hover img {
+  filter: brightness(1.12);
 }
 
 .roll-cover .roll-text {

@@ -157,10 +157,12 @@ route — `PUT` attaches, `DELETE` detaches, and neither destroys anything.
 There are **two membership-reading routes and they fan out on opposite axes.**
 `POST /api/photos/memberships` takes a selection of photo ids and queries once per
 *photo* — it feeds the "3 already in this roll" note in the roll picker, and it is
-the wrong shape for the whole library (835 queries). `GET /api/memberships` queries
-once per *folder* and returns every membership keyed by photo id, which is what All
-photos filters *unfiled* on and what tells the lightbox which rolls a frame is in.
-Neither needs an IAM change; both are DynamoDB reads the API already holds.
+the wrong shape for the whole library (one query per frame). `GET /api/memberships`
+queries once per *folder* and returns every membership keyed by photo id, which is
+what All photos filters *unfiled* on and what tells the lightbox which rolls a frame
+is in. Neither needs an IAM change; both are DynamoDB reads the API already holds.
+Measured against the live table — 4 rolls, 648 memberships — the folder-side fan-out
+is 27 RRU, $0.0000034 a call.
 
 Membership cannot ride along on the library payload, and this is worth knowing
 before someone tries: membership hangs off the **photo's** partition under a
@@ -169,7 +171,7 @@ META items only. The denormalised alternative — a `folders` set on the photo r
 maintained inside the attach/detach transactions — is noted as the upgrade path in
 `allMemberships`. It is not free: `deleteFolder` drops memberships with bare
 `DeleteCommand`s *outside* those transactions, so its cascade would have to maintain
-the set too, and 835 existing photos would need a backfill.
+the set too, and every existing photo would need a backfill.
 
 `POST /api/photos/<id>/develop` re-runs the pipeline for one frame: it copies the
 photo's `orig/` key (or `raw/`, when there is no original) onto itself with
@@ -291,14 +293,20 @@ correction fan out to every roll the frame is in.
 A JPEG and a RAW sharing a basename (`XT300024.JPG` + `.RAF`) are **one** photo
 with `hasRaw: true`. That pairing is why uploads are requested as a batch. The
 JPEG wins as the preview source; the RAF path only runs for RAW-only photos. The
-batch is capped at 200 files in `createUploads` and the admin UI does not chunk, so
-dropping more than that on it fails the whole selection with a 400.
+batch is capped at 200 files in `createUploads`; the admin UI slices to that cap
+in `batchFiles` (`RollIndex.tsx`) and issues the slices in parallel. **A basename
+group is packed whole**, never split across two calls — a pair that straddles a
+slice becomes two photographs with different ids instead of one frame with
+`hasRaw`, and nothing afterwards can pair them back up.
 
 `POST /api/uploads` takes **no folder**, and it is the only way a photograph
 enters the library. The UI offers it from exactly one place — *Add photos* on the
 roll index — so there is never a "which roll did this go to". Frames land with no
-membership and the UI drops you on *All photos* afterwards; filing them is
-`PUT /api/folders/<id>/photos`, the same route *Add to roll…* uses.
+membership; filing them is `PUT /api/folders/<id>/photos`, the same route *Add to
+roll…* uses. The upload flow offers that as a dialog when the uploads finish —
+`requestUploads` already returned the ids, so filing needs no trip through All
+photos. Declining is a first-class answer and lands on *All photos*, which is
+where the frames are either way.
 
 Attach and detach carry **no batch cap**: each is one transaction and touches no
 S3. The old move route was capped at ten because every photo cost a transaction
@@ -402,7 +410,7 @@ a selected id that is currently hidden. Filters live in `RollView` state and die
 with it, since `RollView` is mounted per roll.
 
 An empty sheet has two meanings and `EmptySheet` keeps them apart: filters that
-exclude everything must not render as "No photos yet" over 835 frames.
+exclude everything must not render as "No photos yet" over a full library.
 
 **Destroying a photograph is an All photos action only.** A roll offers "Remove
 from roll"; All photos offers "Delete photos" — never both, in the selection bar
@@ -455,8 +463,16 @@ destructive actions only. Keep accents doing exactly one job.
 ## Importing
 
 Through the admin UI only — *Add photos* on the roll index, which is the single
-code path that can create a photograph. The 200-file cap in `createUploads` is the
-ceiling: a card dump larger than that has to go in batches.
+code path that can create a photograph. A card of any size goes in one gesture:
+the client slices it into 200-file calls (see `batchFiles` above).
+
+Before a byte moves it compares the picked filenames' stems against the
+library's basenames and warns if any already exist. A name match is a **hint,
+not a fact** — two cards can both hold `DSCF0001` — so it confirms rather than
+refuses. Nothing detects a true duplicate: that would need content hashing or an
+index on `basename`, and the realistic mistake is the same card mounted twice,
+which the name check catches. Getting it wrong costs ~8.6 GB, or about $0.20/month
+forever, for bytes nobody wants.
 
 ## Operational notes
 

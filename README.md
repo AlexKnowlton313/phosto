@@ -72,9 +72,11 @@ aws cognito-idp admin-create-user --user-pool-id <POOL_ID> --username you@exampl
 ## Importing photos
 
 Uploads happen in the admin UI, from the roll index — **Add photos**. JPEG and RAW
-files with a matching basename (`XT300024.JPG` + `.RAF`) become one frame. Uploaded
-frames land in the library and in no roll; file them from **All photos** with *Add
-to roll*.
+files with a matching basename (`XT300024.JPG` + `.RAF`) become one frame. Drop a
+whole card on it: the client batches the selection to fit the upload route, warns
+if the filenames are already in the library, and offers to file the frames into a
+roll when they land. Declining leaves them in the library and in no roll — file
+them later from **All photos** with *Add to roll*.
 
 **All photos** filters by filename, camera, month, RAW and — the one that matters
 after a card dump — **in no roll**, which is how you find what is still unfiled.

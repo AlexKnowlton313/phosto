@@ -12,6 +12,37 @@ import { useDialog } from '../components/Dialog';
 /** Enough to saturate a connection without starving the UI thread. */
 const UPLOAD_CONCURRENCY = 4;
 
+/** `createUploads`' own cap. The client slices to it rather than hit the 400. */
+const BATCH = 200;
+
+/** Sentinel choice in the file-on-the-spot picker; no folder id can be `new`. */
+const NEW_ROLL = 'new';
+
+/** Filename without its extension — what pairs XT300024.JPG with .RAF. */
+const stemOf = (filename: string) => filename.replace(/\.[^.]+$/, '');
+
+/**
+ * Slices a card dump into batches the upload route will accept.
+ *
+ * Grouped by basename first and packed whole: a pair split across two calls
+ * becomes two photographs with different ids instead of one frame with
+ * `hasRaw`, and nothing afterwards can put them back together.
+ */
+function batchFiles(files: File[]): File[][] {
+  const groups = new Map<string, File[]>();
+  for (const file of files) {
+    const stem = stemOf(file.name);
+    groups.set(stem, [...(groups.get(stem) ?? []), file]);
+  }
+
+  const batches: File[][] = [[]];
+  for (const group of groups.values()) {
+    if (batches[batches.length - 1].length + group.length > BATCH) batches.push([]);
+    batches[batches.length - 1].push(...group);
+  }
+  return batches;
+}
+
 interface UploadState {
   total: number;
   done: number;
@@ -36,12 +67,83 @@ export function RollIndex({ api, config, folders, onFolderCreated, loadError }: 
   const [upload, setUpload] = useState<UploadState>();
   const [error, setError] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
-  const { confirm, prompt, dialog } = useDialog();
+  const { confirm, choose, prompt, dialog } = useDialog();
 
   const newFolder = async () => {
     const name = await prompt({ title: 'Name this roll', confirmLabel: 'Create' });
     if (!name) return;
     onFolderCreated(await api.createFolder(name));
+  };
+
+  /**
+   * "You have uploaded these names before." A basename match is a hint, not a
+   * fact — two cards really can both hold DSCF0001 — so this warns and lets the
+   * upload through. The realistic mistake it catches is the same card mounted
+   * twice, which is 8.6 GB of duplicate bytes nobody wants.
+   *
+   * ponytail: one `listLibrary` per upload gesture rather than plumbing the
+   * library through Admin into a view that otherwise has no use for it. Same
+   * query All photos runs, ~27 RRU. Lift it up if the index ever needs the
+   * photos for something else.
+   */
+  const confirmDuplicates = async (list: File[]) => {
+    const known = new Set(
+      await api
+        .listLibrary()
+        .then((r) => r.photos.map((p) => p.basename))
+        .catch(() => []),
+    );
+    const clash = [...new Set(list.map((f) => stemOf(f.name)))].filter((s) =>
+      known.has(s),
+    );
+    if (clash.length === 0) return true;
+
+    return confirm({
+      title: `${clash.length} of these names are already in the library`,
+      body:
+        `${clash.slice(0, 3).join(', ')}${clash.length > 3 ? '…' : ''} — uploading ` +
+        'again stores a second copy of the bytes as separate frames. Only the ' +
+        'filenames are compared, so two cards can clash without being the same shot.',
+      confirmLabel: 'Upload anyway',
+    });
+  };
+
+  /**
+   * The ids are in hand the moment the uploads are issued, so filing is one
+   * dialog rather than a trip through All photos. Cancel is a first-class
+   * answer: the frames are in the library either way.
+   */
+  const fileFrames = async (photoIds: string[]): Promise<boolean> => {
+    const choice = await choose({
+      title: `${photoIds.length} frame(s) uploaded. Add them to a roll?`,
+      body: 'They are in the library either way — Cancel leaves them unfiled.',
+      options: [
+        { id: NEW_ROLL, name: 'New roll…' },
+        ...(folders ?? []).map((f) => ({
+          id: f.folderId,
+          name: f.name,
+          note: `${f.photoCount} frames`,
+        })),
+      ],
+    });
+    if (!choice) return false;
+
+    let target = folders?.find((f) => f.folderId === choice);
+    if (choice === NEW_ROLL) {
+      const name = await prompt({ title: 'Name this roll', confirmLabel: 'Create' });
+      if (!name) return false;
+      target = await api.createFolder(name);
+    }
+    if (!target) return false;
+
+    await api.attachPhotos(target.folderId, photoIds);
+
+    // A roll made here has to reach the shell's list before the hash points at
+    // it, or Admin cannot resolve the id and bounces back to this index.
+    // `onFolderCreated` does both; an existing roll only needs the hash.
+    if (choice === NEW_ROLL) onFolderCreated(target);
+    else location.hash = target.folderId;
+    return true;
   };
 
   // Uploads land in the library, in no roll — which is what a photo belonging to
@@ -52,7 +154,14 @@ export function RollIndex({ api, config, folders, onFolderCreated, loadError }: 
     setError(undefined);
 
     try {
-      const { uploads, noPreview } = await api.requestUploads(list);
+      if (!(await confirmDuplicates(list))) return;
+
+      // One call per 200 files, in parallel: the batches share no record and no
+      // roll counter, so nothing contends. A 512-frame card is three Lambda
+      // invocations instead of a 400 that refused the whole selection.
+      const batches = await Promise.all(batchFiles(list).map((b) => api.requestUploads(b)));
+      const uploads = batches.flatMap((b) => b.uploads);
+      const noPreview = batches.flatMap((b) => b.noPreview);
       const byName = new Map(list.map((f) => [f.name, f]));
       const progress = new Array<number>(uploads.length).fill(0);
 
@@ -108,8 +217,10 @@ export function RollIndex({ api, config, folders, onFolderCreated, loadError }: 
         });
       }
 
-      // Land on the sheet the frames actually went to; the hash change loads it.
-      location.hash = LIBRARY_ID;
+      // File them now, while the ids are still in hand. Declining lands on All
+      // photos as before; the hash change loads whichever sheet they went to.
+      const ids = [...new Set(uploads.map((u) => u.photoId))];
+      if (!(await fileFrames(ids))) location.hash = LIBRARY_ID;
     } catch (err) {
       setUpload(undefined);
       setError((err as Error).message);
