@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { saveAs, shareApi, type ShareView } from '../api';
+import { downloadEach, saveAs, shareApi, type ShareView } from '../api';
 import { ContactSheet, EdgeHeader, SkeletonSheet } from '../components/ContactSheet';
 import { Lightbox } from '../components/Lightbox';
 import { selectable, useSelection } from '../components/selection';
@@ -8,7 +8,10 @@ export function Share({ token }: { token: string }) {
   const [data, setData] = useState<ShareView>();
   const [error, setError] = useState<string>();
   const [openIndex, setOpenIndex] = useState<number>();
-  const { selected, toggle, clear } = useSelection();
+  /** Download progress, then its summary. Outlives the selection bar, which
+      unmounts the moment a clean run clears the selection. */
+  const [status, setStatus] = useState<string>();
+  const { selected, toggle, clear, retain } = useSelection();
   const [batching, setBatching] = useState(false);
 
   useEffect(() => {
@@ -45,29 +48,27 @@ export function Share({ token }: { token: string }) {
   const downloadSelected = async () => {
     setError(undefined);
     setBatching(true);
-
-    try {
-      for (const photo of downloadable) {
-        // Signed one at a time, immediately before its download: DOWNLOAD_TTL is
-        // five minutes and a long batch would outlive URLs minted up front.
-        saveAs(await shareApi.download(token, photo.photoId));
-        // Browsers silently drop a burst of programmatic downloads.
-        await new Promise((r) => setTimeout(r, 150));
-      }
-    } catch (err) {
-      // Stop on the first failure rather than marching through the rest: these
-      // fail as a group — an expired link refuses every remaining frame too.
-      setError(`Download stopped: ${(err as Error).message}`);
-    } finally {
-      setBatching(false);
-    }
+    // Whatever did not land stays selected; everything else is cleared, so the
+    // same button is the retry.
+    const { failed, note } = await downloadEach(
+      downloadable,
+      (photo) => shareApi.download(token, photo.photoId),
+      setStatus,
+    );
+    setStatus(note);
+    retain(failed);
+    setBatching(false);
   };
 
   return (
     <>
       <EdgeHeader name={data.folder.name} photos={data.photos} />
 
-      {error && <p className="error" style={{ padding: '16px 24px' }}>{error}</p>}
+      {(error ?? status) && (
+        <p className={error ? 'error' : 'note'} style={{ padding: '16px 24px' }}>
+          {error ?? status}
+        </p>
+      )}
 
       {data.photos.length === 0 ? (
         <div className="empty">

@@ -1,6 +1,6 @@
 import {
   NEW_ROLL,
-  saveAs,
+  downloadEach,
   type AdminApi,
   type FolderView,
   type MembershipResult,
@@ -18,6 +18,8 @@ interface Props {
   photos: PhotoView[];
   selected: Set<string>;
   clear: () => void;
+  /** Narrows the selection to these — what a partly-failed download leaves behind. */
+  retain: (photoIds: string[]) => void;
   /** Re-reads the sheet after anything that changes what is on it. */
   refresh: () => Promise<void>;
   /** Counts and covers move under these, so the roll list has to be re-read. */
@@ -75,6 +77,7 @@ export function SelectionBar({
   photos,
   selected,
   clear,
+  retain,
   refresh,
   reloadFolders,
   setStatus,
@@ -88,22 +91,16 @@ export function SelectionBar({
   const downloadSelected = async (kind: 'original' | 'raw') => {
     setError(undefined);
     setBatching(true);
-
-    try {
-      for (const photo of selectable(photos, selected, kind)) {
-        // Signed one at a time, immediately before its download: DOWNLOAD_TTL is
-        // five minutes and a long batch would outlive URLs minted up front.
-        saveAs(await api.download(photo.photoId, kind));
-        // Browsers silently drop a burst of programmatic downloads.
-        await new Promise((r) => setTimeout(r, 150));
-      }
-    } catch (err) {
-      // Stop on the first failure rather than marching through the rest: these
-      // fail as a group — an expired session refuses frame 2 through 40 too.
-      setError(`Download stopped: ${(err as Error).message}`);
-    } finally {
-      setBatching(false);
-    }
+    // Whatever did not land stays selected; everything else is cleared, so the
+    // same button is the retry.
+    const { failed, note } = await downloadEach(
+      selectable(photos, selected, kind),
+      (photo) => api.download(photo.photoId, kind),
+      setStatus,
+    );
+    setStatus(note);
+    retain(failed);
+    setBatching(false);
   };
 
   /**

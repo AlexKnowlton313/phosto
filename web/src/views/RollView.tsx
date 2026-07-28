@@ -389,6 +389,7 @@ export function RollView({
           photos={photos ?? []}
           selected={selected}
           clear={clear}
+          retain={retain}
           refresh={refresh}
           reloadFolders={reloadFolders}
           setStatus={setStatus}

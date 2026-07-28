@@ -4,21 +4,18 @@ Things phosto does not do yet, one document each. Every one is written against
 the code as it stands: what is missing, why it matters given this architecture,
 the smallest design that works, and what it costs.
 
-Ranked by value against effort — the top three are the ones worth doing first.
-[Range select](range-select.md), [roll sort order](roll-sort-order.md) and
-[staying signed in](session-renewal.md) have since shipped and are out of the
-table.
+Ranked by value against effort. Range select, roll sort order, staying signed in
+and bulk-download progress have shipped; a shipped note leaves the table and its
+document goes with it, so what is here is what is still missing.
 
 | # | Feature | For | Effort | Why |
 |---|---|---|---|---|
 | 6 | [Trash](trash.md) | admin | medium | The one irreversible action in an app otherwise built so mistakes cannot lose a photograph. ~$0.05 to hold a 100-frame delete for 30 days. |
 | 8 | [A line of text on a share](share-note.md) | share viewer | tiny | Nowhere to say what a roll is, and `og:description` is missing entirely, so every link preview has an empty description line. |
 | 9 | [Viewer picks](share-picks.md) | share viewer | small, no server | Marking frames on a contact sheet is what a contact sheet is *for*. localStorage + clipboard, no API surface. |
-| 10 | [Bulk download: progress, don't stop at the first failure](share-bulk-download.md) | both | small | 40 frames is 11 seconds of a disabled button, and one transient failure abandons the rest with no record of what landed. |
 
-Several share an edit. 8 is one key added to `db.updateFolder`'s whitelist —
-`sortOrder` went in the same way. 10 is the same loop in `Share.tsx` and `SelectionBar.tsx`, which is an
-argument for lifting it into `api.ts` once.
+8 is one key added to `db.updateFolder`'s whitelist — `sortOrder` went in the
+same way.
 
 ## Considered and not proposed
 
@@ -33,13 +30,13 @@ argument for lifting it into `api.ts` once.
   one's job.
 - **Drag-to-reorder within a roll.** Position has to live on the membership
   (different order per roll), the membership's sort key cannot be updated in
-  place, and every drag is a write per frame. See the tail of
-  [roll-sort-order.md](roll-sort-order.md) — the direction toggle gets most of
-  the value for one optional attribute.
+  place, and every drag is a write per frame. The shipped direction toggle gets
+  most of the value for one optional attribute.
 - **Zip downloads.** Server-side means compute in the image path, which is the
   one thing the $0.29/month depends on not existing; client-side means 580 MB in
-  browser memory. Reasoning and numbers in
-  [share-bulk-download.md](share-bulk-download.md).
+  browser memory — 40 originals at 14.5 MB, which is a tab crash on a phone. N
+  files with honest progress is the right answer at this scale; revisit as
+  `showDirectoryPicker()` with `downloadEach` as the fallback, not as a zip.
 - **Password-protected shares.** The token is 32 bytes of entropy stored only as
   a SHA-256 hash. A password on top guards against a forwarded link, which is
   what expiry and revocation are for.
@@ -48,11 +45,3 @@ argument for lifting it into `api.ts` once.
 - **Multi-user accounts.** Single admin is a stated constraint, and it is what
   lets the entire auth model be one Cognito user, one cookie, and one flag on a
   route.
-
-## One correction to make in CLAUDE.md
-
-`CLAUDE.md` documents `doctor.config.mjs` at the repo root — its single disabled
-rule, and why. **The file is not in the repo.** Either it was never committed or
-it has been removed; `npx react-doctor` will not be reading it. Worth resolving,
-since the comment it describes is the record of why two loops are deliberately
-sequential.

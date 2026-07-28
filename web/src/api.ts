@@ -321,6 +321,49 @@ export function saveAs({ url, filename }: DownloadTarget) {
   a.remove();
 }
 
+/**
+ * Downloads a selection one frame at a time, reporting progress and carrying on
+ * past a failure.
+ *
+ * Sequential with a 150ms gap because browsers silently drop a burst of
+ * programmatic downloads — this is a loop and not `Promise.all` on purpose. Each
+ * URL is signed immediately before its download: DOWNLOAD_TTL is five minutes
+ * and a long batch would outlive URLs minted up front.
+ *
+ * It no longer stops at the first error. An expired link does refuse every
+ * remaining frame, but so does the summary — `Downloaded 0 of 40` reads the same
+ * as stopping did, while a transient failure on frame 12 no longer abandons 13
+ * through 40. Returns the ids that did not land so the caller can narrow the
+ * selection to them; pressing the button again retries exactly those.
+ */
+export async function downloadEach(
+  photos: PhotoView[],
+  sign: (photo: PhotoView) => Promise<DownloadTarget>,
+  onProgress: (message: string) => void,
+): Promise<{ failed: string[]; note: string }> {
+  const failed: PhotoView[] = [];
+
+  for (const [i, photo] of photos.entries()) {
+    onProgress(`Downloading ${i + 1} of ${photos.length}…`);
+    try {
+      saveAs(await sign(photo));
+    } catch {
+      failed.push(photo);
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  // Failures are named, not counted: the caller keeps them selected, so the
+  // names are what say which frames the button is about to retry.
+  const names = failed.map((p) => p.basename).join(', ');
+  return {
+    failed: failed.map((p) => p.photoId),
+    note:
+      `Downloaded ${photos.length - failed.length} of ${photos.length}` +
+      (failed.length ? ` — ${names} failed` : ''),
+  };
+}
+
 /** Uploads one file to its presigned URL, reporting 0..1 progress. */
 export function uploadFile(
   url: string,
