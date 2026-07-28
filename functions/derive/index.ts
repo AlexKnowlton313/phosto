@@ -100,7 +100,11 @@ async function processRecord(record: S3EventRecord): Promise<void> {
 
   const { photoId, ext, isRaw } = parsed;
 
-  const photo = await db.getPhoto(photoId);
+  // `getAnyPhoto`, not `getPhoto`: a frame trashed between the upload and this
+  // invocation keeps every byte it owns and can be restored, so it wants its
+  // derivatives written like any other. The question here is only whether there
+  // is still a row to attach them to.
+  const photo = await db.getAnyPhoto(photoId);
   if (!photo) {
     console.warn('No photo record for object; skipping', { key });
     return;
@@ -132,12 +136,16 @@ async function processRecord(record: S3EventRecord): Promise<void> {
   const exif = readExif(metadata?.exif);
   await writeDerivatives(pipeline, photoId);
 
-  // Decoding a HEIC or a RAF takes seconds while a DELETE takes milliseconds, so
-  // the frame can be destroyed while this is still working on it. The sweep that
-  // removed its objects then ran *before* these derivatives were written, leaving
-  // bytes under a key no record names and nothing left that could find them
-  // again. Re-read and take them back out rather than strand them.
-  const current = await db.getPhoto(photoId);
+  // Decoding a HEIC or a RAF takes seconds while emptying the trash takes
+  // milliseconds, so the frame can be destroyed while this is still working on
+  // it. The sweep that removed its objects then ran *before* these derivatives
+  // were written, leaving bytes under a key no record names and nothing left
+  // that could find them again. Re-read and take them back out rather than
+  // strand them.
+  //
+  // Row-gone, not trashed: `getAnyPhoto` again, because a trashed frame is one
+  // Restore away from wanting exactly the derivatives just written.
+  const current = await db.getAnyPhoto(photoId);
   if (!current) {
     console.warn('Photo record gone; discarding derivatives just written', {
       key,

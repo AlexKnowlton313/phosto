@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   LIBRARY_ID,
   NOTE_MAX,
+  TRASH_ID,
   saveAs,
   type AdminApi,
   type FolderView,
@@ -70,11 +71,16 @@ function usePendingPoll(
   };
 }
 
+/** Bin size, in whichever unit reads as a quantity rather than a digit string. */
+const humanBytes = (bytes: number) =>
+  bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${Math.round(bytes / 1e6)} MB`;
+
 interface Props {
   api: AdminApi;
-  /** The roll being looked at, or the synthesised All photos pseudo-roll. */
+  /** The roll being looked at, or one of the two synthesised pseudo-rolls. */
   folder: FolderView;
   isLibrary: boolean;
+  isTrash: boolean;
   folders?: FolderView[];
   onFolderUpdated: (folder: FolderView) => void;
   reloadFolders: () => Promise<void>;
@@ -92,10 +98,15 @@ export function RollView({
   api,
   folder,
   isLibrary,
+  isTrash,
   folders,
   onFolderUpdated,
   reloadFolders,
 }: Props) {
+  // Neither pseudo-roll has a folder record, so neither can be renamed, given a
+  // note, reordered, shared or deleted. One name for "this is a real roll"
+  // rather than a growing `!isLibrary && !isTrash` at each of those.
+  const isRoll = !isLibrary && !isTrash;
   // undefined until the first listPhotos lands — an empty array is a real
   // answer ("empty roll"), and the two must not render the same.
   const [photos, setPhotos] = useState<PhotoView[]>();
@@ -103,6 +114,8 @@ export function RollView({
   // already knows its own membership, and this is the one thing the library
   // payload cannot answer.
   const [memberships, setMemberships] = useState<Record<string, string[]>>();
+  // What the bin is costing, straight off the trash payload. Trash only.
+  const [trashBytes, setTrashBytes] = useState<number>();
   const [filters, setFilters] = useState(NO_FILTERS);
   const [openIndex, setOpenIndex] = useState<number>();
   const [sharing, setSharing] = useState(false);
@@ -123,12 +136,23 @@ export function RollView({
     // not wait a second round trip to draw. Riding on refresh rather than its
     // own effect is what keeps memberships current after an attach or a delete,
     // both of which already call this.
-    const [{ photos }, membership] = await Promise.all([
-      folderId === LIBRARY_ID ? api.listLibrary() : api.listPhotos(folderId),
+    // Annotated rather than inferred: `{ photos, bytes }` is a subtype of
+    // `{ photos }`, so a bare ternary reduces the union to the wider one and
+    // loses `bytes` entirely. Optional here says only the trash sends it.
+    const sheet: Promise<{ photos: PhotoView[]; bytes?: number }> =
+      folderId === TRASH_ID
+        ? api.listTrash()
+        : folderId === LIBRARY_ID
+          ? api.listLibrary()
+          : api.listPhotos(folderId);
+
+    const [{ photos, bytes }, membership] = await Promise.all([
+      sheet,
       folderId === LIBRARY_ID ? api.listMemberships() : undefined,
     ]);
     setPhotos(photos);
     setMemberships(membership?.memberships);
+    setTrashBytes(bytes);
     // Here rather than after a delete: any refresh can drop a photo, and a
     // selection holding a deleted id keeps the sheet in selection mode with
     // nothing visibly marked and no obvious way out.
@@ -143,9 +167,11 @@ export function RollView({
   const visible = useMemo(() => {
     if (!photos) return photos;
     if (isLibrary) return filterPhotos(photos, filters, memberships);
+    // Already in thrown-away order, which is the order the trash is read in.
+    if (isTrash) return photos;
     // The API returns newest-first; reversing is the ascending sort.
     return folder.sortOrder === 'oldest' ? [...photos].reverse() : photos;
-  }, [isLibrary, photos, filters, memberships, folder.sortOrder]);
+  }, [isLibrary, isTrash, photos, filters, memberships, folder.sortOrder]);
 
   // Over `visible`, not `photos`: select-all means what is printed on the sheet,
   // the same list the frame numbers and the lightbox run over.
@@ -156,7 +182,13 @@ export function RollView({
     refresh().catch((err: Error) => setError(err.message));
   }, [refresh]);
 
-  const { pending, stalled, restart } = usePendingPoll(photos, refresh, setError);
+  // Not in the trash: an undeveloped frame in the bin is not waiting on
+  // anything, and polling it would re-read the whole library for no answer.
+  const { pending, stalled, restart } = usePendingPoll(
+    isTrash ? undefined : photos,
+    refresh,
+    setError,
+  );
 
   const checkAgain = () => {
     restart();
@@ -231,16 +263,28 @@ export function RollView({
     setOpenIndex(undefined);
   };
 
+  /**
+   * Throws one frame away. Not safelight red and it no longer says permanently,
+   * because it is not: the frame goes to the trash with its bytes intact and
+   * comes back from there. Emptying the trash is the irreversible half.
+   */
   const removePhoto = async (photo: PhotoView) => {
     const ok = await confirm({
-      title: `Permanently delete ${photo.basename}?`,
-      body: 'This removes the original and RAW from every roll it is in.',
-      confirmLabel: 'Delete',
-      danger: true,
+      title: `Move ${photo.basename} to the trash?`,
+      body: 'It leaves every roll it is in. Restore it from Trash to put it back.',
+      confirmLabel: 'Move to trash',
     });
     if (!ok) return;
-    await api.destroyPhoto(photo.photoId);
+    await api.trashPhoto(photo.photoId);
     setOpenIndex(undefined);
+    await refresh();
+    await reloadFolders();
+  };
+
+  /** Back into the library, and into whichever of its old rolls still exist. */
+  const restorePhoto = async (photo: PhotoView) => {
+    setOpenIndex(undefined);
+    await api.restorePhoto(photo.photoId);
     await refresh();
     await reloadFolders();
   };
@@ -273,8 +317,8 @@ export function RollView({
         name={folder.name}
         photos={visible ?? []}
         note={folder.note}
-        onRename={isLibrary ? undefined : renameRoll}
-        onEditNote={isLibrary ? undefined : editNote}
+        onRename={isRoll ? renameRoll : undefined}
+        onEditNote={isRoll ? editNote : undefined}
       />
 
       <div className="toolbar">
@@ -309,7 +353,7 @@ export function RollView({
         {/* A roll is a sequence; All photos is an inbox and has no record to
             hold the field. Label says the order it is in, not the one it would
             switch to. */}
-        {!isLibrary && (
+        {isRoll && (
           <button
             type="button"
             className="btn btn-order"
@@ -326,7 +370,7 @@ export function RollView({
           </button>
         )}
 
-        {!isLibrary && (
+        {isRoll && (
           <button
             type="button"
             className="btn"
@@ -338,7 +382,7 @@ export function RollView({
         )}
 
         {/* Safelight red because it destroys the roll — but not a photograph. */}
-        {!isLibrary && photos && (
+        {isRoll && photos && (
           <button
             type="button"
             className="btn btn-danger"
@@ -362,7 +406,18 @@ export function RollView({
         />
       )}
 
-      {!isLibrary && (
+      {/* What the bin holds and what it is costing. Nothing sweeps it on a
+          timer — the trash is emptied by selecting frames and destroying them,
+          so the number has to be visible or it is a bill found later. */}
+      {isTrash && photos && photos.length > 0 && (
+        <p className="note" style={{ padding: '16px 24px' }}>
+          {photos.length} {photos.length === 1 ? 'frame' : 'frames'} in the trash
+          {trashBytes !== undefined && ` · ${humanBytes(trashBytes)} still stored`}.
+          Select frames to restore them, or to destroy them for good.
+        </p>
+      )}
+
+      {isRoll && (
         <SharePanel
           api={api}
           folderId={folderId}
@@ -389,6 +444,7 @@ export function RollView({
       ) : visible.length === 0 ? (
         <EmptySheet
           isLibrary={isLibrary}
+          isTrash={isTrash}
           filtered={photos.length > 0}
           unfiledOnly={filters.unfiled && !filtersActive({ ...filters, unfiled: false })}
         />
@@ -406,6 +462,7 @@ export function RollView({
           api={api}
           folder={folder}
           isLibrary={isLibrary}
+          isTrash={isTrash}
           folders={folders}
           photos={photos ?? []}
           selected={selected}
@@ -435,13 +492,16 @@ export function RollView({
           onClose={() => setOpenIndex(undefined)}
           onNavigate={setOpenIndex}
           onDownload={download}
-          // Same split as the footer: destroying a frame is an All photos
-          // action, setting a cover is a roll one. Neither view offers both.
+          // Same split as the footer: throwing a frame away is an All photos
+          // action, setting a cover is a roll one. Neither view offers both,
+          // and the trash offers neither — the only thing to do to a frame in
+          // the bin is take it back out.
           onDelete={isLibrary ? removePhoto : undefined}
-          onSetCover={isLibrary ? undefined : setCover}
+          onSetCover={isRoll ? setCover : undefined}
+          onRestore={isTrash ? restorePhoto : undefined}
           // Not a roll action either way: it re-runs the pipeline on the
-          // photograph, so it is offered from both views.
-          onDevelop={develop}
+          // photograph. Pointless on a trashed frame, which is going nowhere.
+          onDevelop={isTrash ? undefined : develop}
         />
       )}
 

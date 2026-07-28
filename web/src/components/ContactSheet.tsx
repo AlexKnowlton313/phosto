@@ -148,15 +148,31 @@ export function SkeletonSheet() {
  */
 export function EmptySheet({
   isLibrary,
+  isTrash,
   /** Frames exist — the filters are what is hiding them. */
   filtered,
   /** *In no roll* is the only filter on, so an empty result is good news. */
   unfiledOnly,
 }: {
   isLibrary: boolean;
+  isTrash: boolean;
   filtered: boolean;
   unfiledOnly: boolean;
 }) {
+  // An empty bin is the good state, and the only one of these three nothings
+  // that is not waiting for the owner to do something about it.
+  if (isTrash) {
+    return (
+      <div className="empty">
+        <h2>The trash is empty</h2>
+        <p className="note">
+          Frames deleted from All photos wait here with their originals and RAWs
+          intact, until you restore them or destroy them for good.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="empty">
       {filtered ? (

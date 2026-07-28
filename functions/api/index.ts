@@ -150,6 +150,10 @@ async function presentPhoto(photo: Photo, opts: Presentation) {
     // developing" from "never will". Not a capability like the keys below, so it
     // is not behind a permission — and a share only ever lists developed frames.
     uploadedAt: photo.uploadedAt,
+    // Only ever set on a frame in the trash, and undefined drops out of the JSON
+    // — so every other payload is unchanged and the trash sheet can say how long
+    // a frame has been waiting to be emptied.
+    deletedAt: photo.deletedAt,
     ready: Boolean(photo.derivedAt),
     hasRaw: opts.allowRaw && photo.hasRaw,
     canDownload: opts.allowDownload && Boolean(photo.originalExt),
@@ -384,21 +388,31 @@ async function deleteObjects(keys: string[]) {
 }
 
 /**
- * Destroys the photograph itself — every folder loses it at once.
+ * Puts a photograph in the trash — every folder loses it at once, and nothing is
+ * destroyed.
  *
- * The only route that can remove an image from the library, and deliberately not
- * reachable from inside a roll: a roll holds pointers, so removing a frame from
- * one is `detachPhoto` and costs nothing.
+ * This is what `DELETE /api/photos/<id>` does now. It touches S3 not at all: the
+ * bytes stay exactly where they are, which is what makes Restore a record edit
+ * rather than an exercise in bucket versioning, and what lets the trash render
+ * as an actual contact sheet instead of a list of filenames.
  *
- * `db.deletePhoto` unpicks the memberships first, decrementing each roll's count
+ * The price, and it is the whole price: a signed derivative URL minted before
+ * the frame was trashed keeps resolving until it expires (`SHARE_TTL`, 12h),
+ * where destroying the photograph outright 404s it at once. Only a viewer who
+ * already had the share open holds one — the share itself stops listing the
+ * frame the moment its membership is unpicked, and `shareDownload` re-checks
+ * membership per request, so no *new* URL can be minted for it. Emptying the
+ * trash is the sweep that does 404, and it is `purgePhoto` below.
+ *
+ * `db.trashPhoto` unpicks the memberships first, decrementing each roll's count
  * and dropping any cover that named this frame, so nothing is left listing it.
  */
-async function destroyPhoto(photoId: string) {
+async function trashPhoto(photoId: string) {
   const photo = await db.getPhoto(photoId);
   if (!photo) throw new HttpError(404, 'Photo not found');
 
   // Covers are streamed cookie-free through `/s/<token>/og.webp` and edge-cached,
-  // so dropping the record is not enough on its own. `db.deletePhoto` clears the
+  // so clearing the record is not enough on its own. `db.trashPhoto` clears the
   // field as it detaches, but only an invalidation stops the preview unfurling in
   // the meantime — so ask before, and act after it has actually gone.
   const memberships = await db.listPhotoMemberships(photoId);
@@ -407,11 +421,78 @@ async function destroyPhoto(photoId: string) {
   );
   const wasCover = folders.some((f) => f?.coverPhotoId === photoId);
 
-  await deleteObjects(photoObjectKeys(photo));
-  await db.deletePhoto(photoId);
+  await db.trashPhoto(photoId);
   if (wasCover) await invalidatePreviews();
 
   return json(204, {});
+}
+
+/** The trashed record, or a 404 — what both trash-only routes open with. */
+async function trashedPhoto(photoId: string): Promise<Photo> {
+  const photo = await db.getAnyPhoto(photoId);
+  if (!photo?.deletedAt) throw new HttpError(404, 'Not in the trash');
+  return photo;
+}
+
+/**
+ * Takes a frame back out of the trash, into the library and into whichever of
+ * its old rolls still exist.
+ *
+ * No S3 call and no invalidation. The derivatives were never removed, so there
+ * is nothing to put back — and where a POP cached a 404 for one, CloudFront's
+ * default negative TTL is ten seconds and no custom `errorResponses` change it.
+ */
+async function restorePhoto(photoId: string) {
+  const photo = await trashedPhoto(photoId);
+  await db.restorePhoto(photo);
+
+  console.log('Photo restored', { photoId, wasIn: photo.wasIn });
+  return json(204, {});
+}
+
+/**
+ * Destroys the photograph. The only route in the API that can lose an image, and
+ * it can only reach one that has already been thrown away.
+ *
+ * This is the old `destroyPhoto` unchanged — `deleteObjects` with its `Errors`
+ * check and its collapsed `/f/<photo>/*` invalidation, then the row. No cover
+ * check: the memberships went when the frame was trashed, which is also why
+ * `db.deletePhoto` finds none left to unpick.
+ */
+async function purgePhoto(photoId: string) {
+  const photo = await trashedPhoto(photoId);
+
+  await deleteObjects(photoObjectKeys(photo));
+  await db.deletePhoto(photoId);
+
+  console.log('Photo destroyed', { photoId, basename: photo.basename });
+  return json(204, {});
+}
+
+/**
+ * What is in the bin, most recently thrown away first — the question here is
+ * "what did I just delete", not "what was this roll".
+ *
+ * Presented with no download permissions at all. The bytes are still there and
+ * a URL would work, but a frame in the trash is not a frame you download; that
+ * is the same answer `getPhoto` gives the download route. Derivatives stay
+ * relative and unsigned like any admin payload, so the sheet renders normally.
+ */
+async function listTrash() {
+  const photos = await db.listTrash();
+  photos.sort((a, b) => (b.deletedAt ?? '').localeCompare(a.deletedAt ?? ''));
+
+  return json(200, {
+    photos: await Promise.all(
+      photos.map((p) =>
+        presentPhoto(p, { allowDownload: false, allowRaw: false, sign: false }),
+      ),
+    ),
+    // What the bin is costing, so it is a number on the screen rather than a
+    // line item found later. Derivatives are ~0.3MB a frame and left out: these
+    // two are the sizes the record actually holds.
+    bytes: photos.reduce((n, p) => n + (p.originalBytes ?? 0) + (p.rawBytes ?? 0), 0),
+  });
 }
 
 /**
@@ -915,16 +996,40 @@ const routes: Array<{
     handle: (event) => createUploads(event),
   },
   {
+    // Trashes. Nothing here destroys a photograph — that is `DELETE
+    // /api/trash/<id>`, which only reaches a frame this route has already
+    // thrown away.
     method: 'DELETE',
     pattern: /^\/api\/photos\/([\w-]+)$/,
     admin: true,
-    handle: (_e, [photoId]) => destroyPhoto(photoId),
+    handle: (_e, [photoId]) => trashPhoto(photoId),
+  },
+  {
+    method: 'POST',
+    pattern: /^\/api\/photos\/([\w-]+)\/restore$/,
+    admin: true,
+    handle: (_e, [photoId]) => restorePhoto(photoId),
   },
   {
     method: 'POST',
     pattern: /^\/api\/photos\/([\w-]+)\/develop$/,
     admin: true,
     handle: (_e, [photoId]) => redevelop(photoId),
+  },
+
+  // --- the trash
+  {
+    method: 'GET',
+    pattern: /^\/api\/trash$/,
+    admin: true,
+    handle: () => listTrash(),
+  },
+  {
+    // The one route in the API that can lose a photograph.
+    method: 'DELETE',
+    pattern: /^\/api\/trash\/([\w-]+)$/,
+    admin: true,
+    handle: (_e, [photoId]) => purgePhoto(photoId),
   },
   {
     method: 'POST',

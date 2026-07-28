@@ -10,6 +10,9 @@ export interface PhotoView {
   takenAt: string;
   /** When the frame entered the library — how a pending one is told from a stuck one. */
   uploadedAt: string;
+  /** Set only on a frame in the trash. Absent everywhere else, so it doubles as
+   * "is this in the bin". */
+  deletedAt?: string;
   ready: boolean;
   hasRaw: boolean;
   canDownload: boolean;
@@ -56,6 +59,12 @@ export const NOTE_MAX = 500;
  * so it can never collide with a real roll's id.
  */
 export const LIBRARY_ID = 'all';
+
+/**
+ * The "Trash" pseudo-roll, on the same terms as `LIBRARY_ID`: not a folder the
+ * server knows, never sent to one, and a literal `randomUUID()` cannot mint.
+ */
+export const TRASH_ID = 'trash';
 
 /**
  * The "New roll…" option in a roll picker. A sentinel for the same reason as
@@ -203,11 +212,30 @@ export const adminApi = (token: TokenSource) => ({
     ),
 
   /**
-   * Destroys the photograph, in every roll at once. The only call here that can
-   * lose an image — taking a frame out of one roll is `detachPhotos`.
+   * Puts the photograph in the trash, out of every roll at once. Nothing is
+   * destroyed: the bytes stay put and `restorePhoto` puts the frame back in the
+   * rolls it was in. Taking a frame out of one roll is still `detachPhotos`.
    */
-  destroyPhoto: (photoId: string) =>
+  trashPhoto: (photoId: string) =>
     request<void>(`/api/photos/${photoId}`, { method: 'DELETE' }, token),
+
+  restorePhoto: (photoId: string) =>
+    request<void>(`/api/photos/${photoId}/restore`, { method: 'POST' }, token),
+
+  /**
+   * What is in the bin, most recently thrown away first, and what it is costing.
+   * `bytes` counts originals and RAWs — the sizes the record holds — so it is
+   * the number the storage bill is actually made of.
+   */
+  listTrash: () =>
+    request<{ photos: PhotoView[]; bytes: number }>('/api/trash', {}, token),
+
+  /**
+   * Destroys the photograph. The only call here that can lose an image, and it
+   * only reaches a frame already in the trash.
+   */
+  purgePhoto: (photoId: string) =>
+    request<void>(`/api/trash/${photoId}`, { method: 'DELETE' }, token),
 
   /**
    * Membership, both directions. No batch cap and no S3 work behind either — the

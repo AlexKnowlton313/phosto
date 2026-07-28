@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import {
   adminApi,
   LIBRARY_ID,
+  TRASH_ID,
   type AppConfig,
   type FolderView,
   type TokenSource,
@@ -43,6 +44,9 @@ export function Admin({
   // renamed, shared or deleted, and there is nothing to detach from. Everything
   // else about it is an ordinary contact sheet.
   const isLibrary = folderId === LIBRARY_ID;
+  // Trash is the second one, on the same terms. It reads a different route and
+  // its selection does different things, but it is still a contact sheet.
+  const isTrash = folderId === TRASH_ID;
 
   // The signed cookies, not the JWT, are what let the browser load images.
   // Sequential on purpose: cover thumbnails render as soon as the folders land,
@@ -77,7 +81,9 @@ export function Admin({
   // every line. Its `photoCount` is the sheet's own length, so it stays 0 here.
   const current: FolderView | undefined = isLibrary
     ? { folderId: LIBRARY_ID, name: 'All photos', createdAt: '', photoCount: 0 }
-    : folders?.find((f) => f.folderId === folderId);
+    : isTrash
+      ? { folderId: TRASH_ID, name: 'Trash', createdAt: '', photoCount: 0 }
+      : folders?.find((f) => f.folderId === folderId);
 
   if (!current) {
     // A reload with a hash arrives before the folder list does; don't flash the
@@ -112,6 +118,7 @@ export function Admin({
       api={api}
       folder={current}
       isLibrary={isLibrary}
+      isTrash={isTrash}
       folders={folders}
       onFolderUpdated={(folder) =>
         setFolders((prev) => prev?.map((f) => (f.folderId === folder.folderId ? folder : f)))

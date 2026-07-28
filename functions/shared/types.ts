@@ -43,6 +43,21 @@ export interface Photo {
   hasRaw: boolean;
   /** Set once the derive Lambda has written thumb/large. */
   derivedAt?: string;
+  /**
+   * In the trash, and when it went there.
+   *
+   * Not a tombstone: every byte the photograph owns is still in the bucket and
+   * still where it was, because a trash whose bytes are gone is a list of
+   * filenames. What the flag actually does is take the frame out of
+   * `listLibrary` — the memberships are unpicked separately, so no roll counts
+   * it and no share can list it.
+   */
+  deletedAt?: string;
+  /**
+   * The rolls it was in when it was trashed, so Restore can put it back in them.
+   * Rolls deleted in the meantime are skipped on the way out.
+   */
+  wasIn?: string[];
   /** Populated from EXIF when available — shown in the lightbox. */
   camera?: string;
   lens?: string;

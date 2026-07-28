@@ -29,6 +29,8 @@ interface Props {
   onDownload: (photo: PhotoView, kind: 'original' | 'raw') => void;
   /** Only supplied in the admin view; viewers never see a delete control. */
   onDelete?: (photo: PhotoView) => void;
+  /** Trash only, and the one thing worth offering on a frame in the bin. */
+  onRestore?: (photo: PhotoView) => void;
   /** Admin only, same as onDelete. Absent in the library, which is not a roll. */
   onSetCover?: (photo: PhotoView) => void;
   /** Admin only. Offered on an undeveloped frame — a viewer never sees one. */
@@ -49,6 +51,7 @@ export function Lightbox({
   onNavigate,
   onDownload,
   onDelete,
+  onRestore,
   onSetCover,
   onDevelop,
   rollsOf,
@@ -326,9 +329,16 @@ export function Lightbox({
             Set as cover
           </button>
         )}
+        {onRestore && (
+          <button type="button" className="btn" onClick={() => onRestore(photo)}>
+            Restore
+          </button>
+        )}
+        {/* Not red and not "Delete": this moves the frame to the trash with
+            every byte intact. Destroying one is a Trash action. */}
         {onDelete && (
-          <button type="button" className="btn btn-danger" onClick={() => onDelete(photo)}>
-            Delete
+          <button type="button" className="btn" onClick={() => onDelete(photo)}>
+            Move to trash
           </button>
         )}
         {/* close() rather than onClose(), so every way out of here — button,

@@ -170,12 +170,30 @@ export async function putPhoto(photo: Photo): Promise<void> {
  * long as `pk` carried the folder — the documented "first thing that stops
  * scaling". The photo id is the partition key now, so it costs one read unit
  * whatever the library is doing.
+ *
+ * The row as stored, trash included. Almost nothing wants this — see `getPhoto`
+ * below, which is what every caller acting *on a photograph* should use.
  */
-export async function getPhoto(photoId: string): Promise<Photo | null> {
+export async function getAnyPhoto(photoId: string): Promise<Photo | null> {
   const res = await ddb.send(
     new GetCommand({ TableName: TABLE, Key: { pk: photoPk(photoId), sk: 'META' } }),
   );
   return (res.Item as Photo) ?? null;
+}
+
+/**
+ * A live photograph. Null when it is missing **or in the trash**, because every
+ * caller here wants the same answer for both: develop, download, attach to a
+ * roll and the share's own membership check are all things a trashed frame must
+ * refuse, and one guard in the shared read is the whole fix.
+ *
+ * The two exceptions read `getAnyPhoto` deliberately: the trash routes, which
+ * exist to act on a trashed record, and derive, which asks the narrower question
+ * "is there still a row to attach these derivatives to".
+ */
+export async function getPhoto(photoId: string): Promise<Photo | null> {
+  const photo = await getAnyPhoto(photoId);
+  return photo?.deletedAt ? null : photo;
 }
 
 /** Pages a gsi1 partition in full, newest first. */
@@ -206,8 +224,23 @@ async function queryGsi1(pk: string, skPrefix?: string): Promise<unknown[]> {
   return items;
 }
 
-/** Every photo, in no folder in particular — what "All photos" renders. */
-export const listLibrary = () => queryGsi1(LIBRARY_PK) as Promise<Photo[]>;
+/**
+ * Every photo, in no folder in particular — what "All photos" renders.
+ *
+ * Trashed frames keep `gsi1pk = LIB` and are filtered out here rather than moved
+ * to a partition of their own, so this stays the single query it has always been
+ * and `listTrash` is exactly its complement.
+ *
+ * ponytail: filtered after the read, so a trashed frame still costs a read unit.
+ * The whole partition is one page today; give the trash its own `gsi1pk` if it
+ * ever holds enough for that to matter.
+ */
+export const listLibrary = async () =>
+  ((await queryGsi1(LIBRARY_PK)) as Photo[]).filter((p) => !p.deletedAt);
+
+/** What is in the bin. Unsorted here — callers order by `deletedAt`. */
+export const listTrash = async () =>
+  ((await queryGsi1(LIBRARY_PK)) as Photo[]).filter((p) => p.deletedAt);
 
 /** Every roll, newest first. `ROOT` is the partition every folder hangs off. */
 export const listFolders = () => queryGsi1('ROOT') as Promise<Folder[]>;
@@ -416,18 +449,78 @@ export async function detachPhoto(folder: Folder, photoId: string): Promise<bool
 }
 
 /**
- * Destroys the photograph itself: every membership first, then the record.
+ * Takes a photo out of every roll it is in, and says which those were.
  *
- * Memberships lead so that no folder is left listing a photo that has stopped
- * existing — `listPhotos` would BatchGet a hole. Each detach is its own
- * transaction because they span different folders and DynamoDB caps a transaction
- * at 100 items; a photo in a handful of rolls makes this a handful of round trips.
+ * Shared by trashing and destroying, which differ only in what becomes of the
+ * record afterwards. Memberships lead in both cases so that no folder is left
+ * listing a frame it can no longer show — `listPhotos` would BatchGet a hole.
+ * Each detach is its own transaction because they span different folders and
+ * DynamoDB caps a transaction at 100 items; a photo in a handful of rolls makes
+ * this a handful of round trips.
  */
-export async function deletePhoto(photoId: string): Promise<void> {
+async function unpickMemberships(photoId: string): Promise<string[]> {
+  const wasIn: string[] = [];
   for (const membership of await listPhotoMemberships(photoId)) {
     const folder = await getFolder(membership.folderId);
-    if (folder) await detachPhoto(folder, photoId);
+    if (folder && (await detachPhoto(folder, photoId))) wasIn.push(folder.folderId);
   }
+  return wasIn;
+}
+
+/**
+ * Puts a photograph in the trash.
+ *
+ * Nothing is destroyed and no byte moves: this unpicks the memberships, so roll
+ * counts stay honest and no share can list the frame, and marks the record so
+ * `listLibrary` stops returning it. `wasIn` is the receipt that lets Restore put
+ * it back where it was.
+ *
+ * Returns false if the record vanished first — `updatePhoto`'s guard, for the
+ * same reason it has one.
+ */
+export async function trashPhoto(photoId: string): Promise<boolean> {
+  const wasIn = await unpickMemberships(photoId);
+  return updatePhoto(photoId, { deletedAt: new Date().toISOString(), wasIn });
+}
+
+/**
+ * Takes a photograph back out of the trash and re-files it.
+ *
+ * `REMOVE`, not a patch: `setExpression` only ever SETs, and `deletedAt: ''`
+ * would leave a field every read still has to reason about. The attach comes
+ * after the clear so that nothing can put a still-trashed frame in a roll, and a
+ * roll deleted since simply drops out — `attachPhoto` would throw on it, where
+ * losing one destination is not worth failing the whole restore over.
+ */
+export async function restorePhoto(photo: Photo): Promise<void> {
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: { pk: photoPk(photo.photoId), sk: 'META' },
+      UpdateExpression: 'REMOVE #deletedAt, #wasIn',
+      // Aliased like every other name in this file. Neither is a reserved word
+      // today, but the reserved list is ~570 entries long and reads nothing like
+      // a rule, so nothing here spells an attribute name out.
+      ExpressionAttributeNames: { '#deletedAt': 'deletedAt', '#wasIn': 'wasIn' },
+      ConditionExpression: 'attribute_exists(pk)',
+    }),
+  );
+
+  for (const folderId of photo.wasIn ?? []) {
+    if (await getFolder(folderId)) await attachPhoto(folderId, photo);
+  }
+}
+
+/**
+ * Destroys the photograph itself: every membership first, then the record.
+ *
+ * Reached only from the trash now, where the memberships were already unpicked —
+ * so the loop finds none and this is one delete. It is kept as the full cascade
+ * anyway because it is the last thing standing between a stray caller and a row
+ * that outlives the rolls pointing at it.
+ */
+export async function deletePhoto(photoId: string): Promise<void> {
+  await unpickMemberships(photoId);
 
   await ddb.send(
     new DeleteCommand({ TableName: TABLE, Key: { pk: photoPk(photoId), sk: 'META' } }),

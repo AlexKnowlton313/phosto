@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import {
   LIBRARY_ID,
   NEW_ROLL,
+  TRASH_ID,
   uploadFile,
   type AdminApi,
   type AppConfig,
@@ -310,6 +311,20 @@ export function RollIndex({ api, config, folders, onFolderCreated, loadError }: 
           <div className="roll-text">
             <div className="roll-name">All photos</div>
             <div className="roll-meta">every frame, in no roll in particular</div>
+          </div>
+        </button>
+
+        {/* Second, and also always present. No count on it: that would be a
+            `/api/trash` call on every visit to the index, for a number that is
+            usually zero and is on the sheet itself either way. */}
+        <button
+          type="button"
+          className="roll"
+          onClick={() => (location.hash = TRASH_ID)}
+        >
+          <div className="roll-text">
+            <div className="roll-name">Trash</div>
+            <div className="roll-meta">deleted frames, still recoverable</div>
           </div>
         </button>
 

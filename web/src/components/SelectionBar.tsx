@@ -11,9 +11,10 @@ import { selectable } from './selection';
 
 interface Props {
   api: AdminApi;
-  /** The roll being looked at, or the synthesised All photos pseudo-roll. */
+  /** The roll being looked at, or one of the two synthesised pseudo-rolls. */
   folder: FolderView;
   isLibrary: boolean;
+  isTrash: boolean;
   folders?: FolderView[];
   photos: PhotoView[];
   selected: Set<string>;
@@ -73,6 +74,7 @@ export function SelectionBar({
   api,
   folder,
   isLibrary,
+  isTrash,
   folders,
   photos,
   selected,
@@ -186,36 +188,31 @@ export function SelectionBar({
   };
 
   /**
-   * Destroys the photographs themselves — the only irreversible action in the
-   * app, which is why it is offered from All photos only and still confirms.
+   * One call per frame, in order, reporting as it goes.
+   *
+   * Sequential deliberately, and the reason is the same for all three callers
+   * below: trashing a photo unpicks its memberships and restoring re-attaches
+   * them, each of which is a transaction that bumps the roll's `photoCount` —
+   * so two frames from the same roll done at once contend on one item and the
+   * loser comes back a TransactionConflictException. Destroying rides along
+   * because it is the same shape and the same wind-down.
    */
-  const destroySelected = async () => {
-    const ids = [...selected];
-    const ok = await confirm({
-      title: `Permanently delete ${ids.length} photograph(s)?`,
-      body:
-        'This removes the originals and RAWs from every roll they are in. To ' +
-        'take them out of one roll, open that roll and use Remove from roll.',
-      confirmLabel: 'Delete',
-      danger: true,
-    });
-    if (!ok) return;
-
+  const runEach = async (
+    ids: string[],
+    verb: string,
+    call: (photoId: string) => Promise<void>,
+  ) => {
     setError(undefined);
     setBatching(true);
     let done = 0;
     try {
-      // One at a time, deliberately. Deleting a photo unpicks its memberships,
-      // and each of those is a transaction that bumps the roll's photoCount —
-      // so two frames from the same roll deleted at once contend on one item
-      // and the loser comes back a TransactionConflictException.
       for (const photoId of ids) {
-        await api.destroyPhoto(photoId);
+        await call(photoId);
         done += 1;
-        setStatus(`Deleted ${done} of ${ids.length}…`);
+        setStatus(`${verb} ${done} of ${ids.length}…`);
       }
     } catch (err) {
-      setError(`${(err as Error).message} (${ids.length - done} not deleted)`);
+      setError(`${(err as Error).message} (${ids.length - done} left)`);
     } finally {
       setStatus(undefined);
       clear();
@@ -225,6 +222,79 @@ export function SelectionBar({
       await reloadFolders();
     }
   };
+
+  /**
+   * Throws the selection away. Reversible now — the frames keep every byte and
+   * sit in the trash until they are restored or destroyed — so this no longer
+   * wears safelight red, and the confirm is about the rolls they leave rather
+   * than about losing a negative.
+   */
+  const trashSelected = async () => {
+    const ids = [...selected];
+    const ok = await confirm({
+      title: `Move ${ids.length} photograph(s) to the trash?`,
+      body:
+        'They leave every roll they are in and keep their originals and RAWs. ' +
+        'Restore them from Trash, or destroy them there for good.',
+      confirmLabel: 'Move to trash',
+    });
+    if (!ok) return;
+    await runEach(ids, 'Moved', api.trashPhoto);
+  };
+
+  /** Back into the library, and into whichever of their old rolls still exist. */
+  const restoreSelected = () => runEach([...selected], 'Restored', api.restorePhoto);
+
+  /**
+   * Destroys the photographs themselves — the only irreversible action in the
+   * app. Offered from the trash and nowhere else, so nothing can reach it
+   * without having thrown the frames away first and looked at them again.
+   */
+  const purgeSelected = async () => {
+    const ids = [...selected];
+    const ok = await confirm({
+      title: `Permanently destroy ${ids.length} photograph(s)?`,
+      body:
+        'This deletes the originals, the RAWs and the previews. There is no ' +
+        'copy anywhere and this cannot be undone.',
+      confirmLabel: 'Destroy',
+      danger: true,
+    });
+    if (!ok) return;
+    await runEach(ids, 'Destroyed', api.purgePhoto);
+  };
+
+  // The trash has its own two, and shares none of the others: a frame in the
+  // bin is not downloadable, and filing one into a roll would be filing
+  // something that is not in the library.
+  if (isTrash) {
+    return (
+      <div className="toolbar toolbar-footer">
+        <span className="note">{selected.size} selected</span>
+        <button
+          type="button"
+          className="btn"
+          disabled={batching}
+          onClick={restoreSelected}
+        >
+          Restore
+        </button>
+        <button
+          type="button"
+          className="btn btn-danger"
+          disabled={batching}
+          onClick={purgeSelected}
+        >
+          Destroy permanently
+        </button>
+        <div className="spacer" />
+        <button type="button" className="btn" onClick={clear}>
+          Clear
+        </button>
+        {dialog}
+      </div>
+    );
+  }
 
   return (
     <div className="toolbar toolbar-footer">
@@ -255,18 +325,19 @@ export function SelectionBar({
         Add to roll…
       </button>
       {/* Exactly one of these two, never both. Inside a roll the answer to "get
-          rid of this" is almost always "take it out of this roll", and the
-          destructive twin sitting beside it is a misclick that loses a negative.
-          Destroying a photograph is offered from All photos only, where it is
-          unambiguous — there is no roll it could have meant instead. */}
+          rid of this" is almost always "take it out of this roll", and the twin
+          sitting beside it is a misclick. Throwing a photograph away is offered
+          from All photos only, where it is unambiguous — there is no roll it
+          could have meant instead. Neither one loses a negative any more: the
+          only button that can is Destroy permanently, in the trash. */}
       {isLibrary ? (
         <button
           type="button"
-          className="btn btn-danger"
+          className="btn"
           disabled={batching}
-          onClick={destroySelected}
+          onClick={trashSelected}
         >
-          Delete photos
+          Move to trash
         </button>
       ) : (
         <button

@@ -35,10 +35,13 @@ looking for one, and don't imply coverage that doesn't exist. The verification l
 is `npm run typecheck`, then `npm run diff` to read the CloudFormation change, then
 the access-control canary described below.
 
-`npx react-doctor` lints `web/` and currently scores 100. It flags
-`async-await-in-loop`; both sequential loops here are sequential on purpose — one
-because concurrent deletes contend on a roll's `photoCount` in DynamoDB, the other
-because browsers drop a burst of programmatic downloads.
+`npx react-doctor` lints `web/` and currently scores 85. Three warnings, all
+known: `async-await-in-loop` twice — both loops are sequential on purpose, one
+because concurrent membership changes contend on a roll's `photoCount` in
+DynamoDB, the other because browsers drop a burst of programmatic downloads —
+and `no-giant-component` on `RollView` and `Lightbox`, which are one screen and
+one modal respectively and do not want splitting into pieces that only ever
+appear together.
 
 `functions/layers/*/nodejs/` is gitignored and CDK reads it with `Code.fromAsset`,
 so a bare `npx cdk synth`/`deploy` on a fresh clone fails until `npm run
@@ -152,7 +155,36 @@ cached per container but never cached as a rejected promise.
 Routes that take a photo do **not** take a folder: a photo belongs to no folder, so
 `/api/photos/<id>` is the whole path. `/api/folders/<id>/photos` is the membership
 route — `PUT` attaches, `DELETE` detaches, and neither destroys anything.
-`DELETE /api/photos/<id>` is the only route in the API that can lose a photograph.
+`DELETE /api/photos/<id>` **trashes**: it unpicks every membership and marks the
+record, and touches S3 not at all. `DELETE /api/trash/<id>` is the only route in
+the API that can lose a photograph, and it only reaches a frame the first one has
+already thrown away.
+
+### The trash
+
+A trashed photograph keeps **every byte it owns, exactly where it was**. There is
+no bucket versioning, no delete marker, no lifecycle rule and no scheduler:
+`deletedAt` on the record takes the frame out of `listLibrary`, unpicking the
+memberships takes it out of every roll, and `POST /api/photos/<id>/restore` puts
+both back from the `wasIn` list. Restoring is a record edit — it makes no S3 call
+at all, which is why the trash renders as a real contact sheet rather than a list
+of filenames.
+
+**What that costs, and it is the only thing it costs:** a signed derivative URL
+minted before the frame was trashed keeps resolving until it expires
+(`SHARE_TTL`, 12h), where destroying the photograph outright 404s it at once.
+Only a viewer who already had the share open holds one — the share stops listing
+the frame the moment its membership goes, and `shareDownload` re-checks
+membership per request, so no *new* URL can be minted for it. Emptying the trash
+is the sweep that does 404.
+
+**Nothing purges the trash on a timer.** That is deliberate — a 30-day clock you
+cannot see is a bill you find later — so the trash sheet prints its own frame
+count and gigabytes, and *Destroy permanently* is the only thing that reclaims
+them.
+
+`db.getPhoto` is where all of this is enforced: see the landmine below before
+adding a route that reads a photo.
 
 There are **two membership-reading routes and they fan out on opposite axes.**
 `POST /api/photos/memberships` takes a selection of photo ids and queries once per
@@ -261,6 +293,15 @@ the index.
 - **`presentPhoto` is async and signs per object.** Calling it in a `.map()`
   without `Promise.all` yields an array of promises that `JSON.stringify` renders
   as `[{},{}]` — a 200 with an empty-looking payload rather than an error.
+- **`db.getPhoto` hides trashed frames; `db.getAnyPhoto` does not.** Reach for
+  `getPhoto` in anything that acts on a photograph — develop, download, attach
+  to a roll, a share's membership check — because a trashed frame has to refuse
+  all of them and one guard in the shared read is the whole fix. `getAnyPhoto`
+  exists for exactly two callers and picking it by accident is how a frame in
+  the bin becomes downloadable again: the trash routes, which act *on* a trashed
+  record, and derive, which asks the narrower question "is there still a row to
+  attach these derivatives to" — a frame trashed mid-decode keeps its bytes and
+  wants its derivatives written, where a *purged* one must have them swept.
 
 ## Data model
 
@@ -282,6 +323,11 @@ lists every photo, and `gsi1pk = FOLDER#<id>` holds both that folder's shares
 (`SHARE#…`) and its photos (`PHOTO#…`) — two `begins_with` queries on one
 partition. `LIB` is a single partition; at 835 photos that is one page, and the
 `ponytail:` comment on `LIBRARY_PK` names the upgrade path.
+
+A trashed photo keeps `gsi1pk = LIB`: `listLibrary` and `listTrash` are the same
+query with opposite filters on `deletedAt`, so the trash costs no second
+partition and no second index. Give it its own `gsi1pk` if it ever holds enough
+frames for the wasted read units to matter.
 
 Membership sort keys use `uploadedAt`, **not** `takenAt` — the derive Lambda
 corrects `takenAt` from EXIF, and a sort key cannot be updated in place. Callers
@@ -412,12 +458,22 @@ with it, since `RollView` is mounted per roll.
 An empty sheet has two meanings and `EmptySheet` keeps them apart: filters that
 exclude everything must not render as "No photos yet" over a full library.
 
-**Destroying a photograph is an All photos action only.** A roll offers "Remove
-from roll"; All photos offers "Delete photos" — never both, in the selection bar
-or in the lightbox. Inside a roll "get rid of this" nearly always means "take it
-out of this roll"; from All photos there is no roll it could have meant instead.
-Side by side the two look alike, and one misclick is the difference between a
-pointer and a negative. Safelight red, and it confirms.
+**Throwing a photograph away is an All photos action only.** A roll offers
+"Remove from roll"; All photos offers "Move to trash" — never both, in the
+selection bar or in the lightbox. Inside a roll "get rid of this" nearly always
+means "take it out of this roll"; from All photos there is no roll it could have
+meant instead. Neither one loses a negative now, so neither is safelight red;
+both confirm, because both take a frame out of rolls it was in.
+
+**Trash is the second pseudo-roll**, beside *All photos* in the roll list and on
+the same terms — `TRASH_ID` (`'trash'`) is not a folder id the server knows, and
+`Admin.tsx` synthesises a `FolderView` for it. `RollView` gates on `isRoll`
+(`!isLibrary && !isTrash`) for everything only a real roll has: rename, note,
+sort order, share, delete roll. The trash reads `/api/trash`, applies no
+filters, keeps its thrown-away order, and does not poll for pending frames —
+nothing in the bin is developing. Its `SelectionBar` returns early with two
+buttons of its own: *Restore*, and *Destroy permanently* in safelight red. That
+red is now the only one in the app that can lose a photograph.
 
 Every question the admin asks goes through `useDialog()`
 (`components/Dialog.tsx`) — a native `<dialog>` + `showModal()`, so the focus
